@@ -172,6 +172,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "debug_tls_like_client", .path = "examples/debug_tls_like_client.zig", .desc = "TLS test with HTTP client structure" },
         .{ .name = "exact_copy_test", .path = "examples/exact_copy_test.zig", .desc = "Exact copy of working TLS example with HTTP client pattern" },
         .{ .name = "test_https_with_verification", .path = "examples/test_https_with_verification.zig", .desc = "HTTPS test with certificate verification enabled" },
+        .{ .name = "debug_tls_connection_only", .path = "examples/debug_tls_connection_only.zig", .desc = "Test HTTP client TLS setup in isolation" },
     };
 
     for (examples) |example| {

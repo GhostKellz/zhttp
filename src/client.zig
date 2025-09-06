@@ -161,6 +161,11 @@ pub const Client = struct {
     
     /// Read HTTP response from connection
     fn readResponse(self: *Client, conn: *Connection) !Response {
+        // For TLS connections, read all data at once like working examples
+        if (conn.is_tls) {
+            return self.readTlsResponse(conn);
+        }
+        
         // Read status line directly from stream
         var line_buffer: [1024]u8 = undefined;
         std.log.info("Reading status line from connection...", .{});
@@ -187,6 +192,61 @@ pub const Client = struct {
         return response;
     }
     
+    /// Read TLS response all at once like working examples
+    fn readTlsResponse(self: *Client, conn: *Connection) !Response {
+        // Read entire response at once like working examples - use heap buffer for persistence
+        const response_buffer = try self.allocator.alloc(u8, 8192);
+        defer self.allocator.free(response_buffer);
+        
+        const bytes_read = try conn.read(response_buffer);
+        
+        if (bytes_read == 0) return error.EndOfStream;
+        
+        std.log.info("Read {} bytes from TLS", .{bytes_read});
+        const response_data = response_buffer[0..bytes_read];
+        
+        // Parse the response data
+        return self.parseHttpResponseFromData(response_data);
+    }
+    
+    /// Parse HTTP response from raw data  
+    fn parseHttpResponseFromData(self: *Client, data: []const u8) !Response {
+        var line_iter = std.mem.splitSequence(u8, data, "\r\n");
+        
+        // Parse status line
+        const status_line_str = line_iter.next() orelse return error.InvalidResponse;
+        std.log.info("Got status line: {s}", .{status_line_str});
+        const status_line = try Http1.parseStatusLine(status_line_str);
+        
+        // Create response with owned reason string
+        const owned_reason = try self.allocator.dupe(u8, status_line.reason);
+        var response = Response.init(self.allocator, status_line.status, owned_reason, status_line.version);
+        
+        // Parse headers
+        while (line_iter.next()) |line| {
+            if (line.len == 0) break; // Empty line ends headers
+            
+            const header = try Http1.parseHeaderLine(line);
+            // Duplicate header name and value for persistence
+            const owned_name = try self.allocator.dupe(u8, header.name);
+            const owned_value = try self.allocator.dupe(u8, header.value);
+            try response.addHeader(owned_name, owned_value);
+        }
+        
+        // Find body start
+        const headers_end = std.mem.indexOf(u8, data, "\r\n\r\n") orelse return error.InvalidResponse;
+        const body_start = headers_end + 4;
+        
+        if (body_start < data.len) {
+            const body_data = data[body_start..];
+            // Allocate persistent memory for body data
+            const owned_body_data = try self.allocator.dupe(u8, body_data);
+            response.setBody(Body.fromString(owned_body_data));
+        }
+        
+        return response;
+    }
+    
     /// Read response body from connection into memory
     fn readResponseBodyFromConnection(self: *Client, conn: *Connection, headers: Header.HeaderMap) !Body {
         if (Http1.isChunkedEncoding(headers)) {
@@ -208,11 +268,13 @@ pub const Client = struct {
         
         var total_read: usize = 0;
         while (total_read < content_length) {
-            const bytes_read = try conn.read(body_data[total_read..]);
+            // Handle connection errors properly for TLS connections  
+            const bytes_read = conn.read(body_data[total_read..]) catch 0;
             if (bytes_read == 0) break; // Connection closed
             total_read += bytes_read;
         }
         
+        // For Content-Length bodies, we must read exactly the promised bytes
         if (total_read != content_length) {
             self.allocator.free(body_data);
             return error.IncompleteBody;
@@ -228,8 +290,9 @@ pub const Client = struct {
         
         var buffer: [4096]u8 = undefined;
         while (true) {
-            const bytes_read = try conn.read(&buffer);
-            if (bytes_read == 0) break; // Connection closed
+            // Handle connection errors properly - EOF is expected for Connection: close
+            const bytes_read = conn.read(&buffer) catch 0;
+            if (bytes_read == 0) break; // Connection closed cleanly
             try body_data.appendSlice(self.allocator, buffer[0..bytes_read]);
         }
         
@@ -337,175 +400,165 @@ const ConnectionPool = struct {
         
         // Create new connection
         const conn = try self.allocator.create(Connection);
-        conn.* = Connection.init();
+        conn.* = try Connection.init(self.allocator);
         return conn;
     }
     
     fn releaseConnection(self: *ConnectionPool, conn: *Connection) void {
         // TODO: Implement connection reuse logic
         // For now, just close the connection
-        conn.close();
+        conn.deinit();
         self.allocator.destroy(conn);
     }
 };
 
-/// Individual HTTP connection
-/// TLS wrapper that manages buffers and client together
-const TlsConnection = struct {
-    client: std.crypto.tls.Client,
-    tls_read_buffer: []u8,
-    tls_write_buffer: []u8,
+const Connection = struct {
+    // TCP stream - always present and stable
+    tcp_stream: ?net.Stream,
+    
+    // Stable buffered I/O - embedded as fields to ensure stable memory addresses  
     stream_read_buffer: []u8,
     stream_write_buffer: []u8,
-    stream_writer: net.Stream.Writer,  // Store the stream writer used during init
-    ca_bundle: ?crypto.Certificate.Bundle, // CA bundle for certificate verification
-    allocator: std.mem.Allocator,
+    buffered_reader: ?net.Stream.Reader,
+    buffered_writer: ?net.Stream.Writer,
     
-    fn deinit(self: *TlsConnection) void {
-        self.allocator.free(self.tls_read_buffer);
-        self.allocator.free(self.tls_write_buffer);
-        self.allocator.free(self.stream_read_buffer);
-        self.allocator.free(self.stream_write_buffer);
-        if (self.ca_bundle) |*bundle| {
-            bundle.deinit(self.allocator);
-        }
-    }
-};
-
-const Connection = struct {
-    stream: ?net.Stream,
-    tls: ?*TlsConnection,
+    // TLS fields - only used for HTTPS connections
+    is_tls: bool,
+    tls_client: ?std.crypto.tls.Client,
+    tls_read_buffer: []u8,
+    tls_write_buffer: []u8,
+    ca_bundle: ?crypto.Certificate.Bundle,
+    
+    // Connection state
     connected: bool,
     last_used: i64,
-    is_tls: bool,
+    allocator: std.mem.Allocator,
     
-    fn init() Connection {
+    fn init(allocator: std.mem.Allocator) !Connection {
         return Connection{
-            .stream = null,
-            .tls = null,
+            .tcp_stream = null,
+            .stream_read_buffer = &[_]u8{},
+            .stream_write_buffer = &[_]u8{}, 
+            .buffered_reader = null,
+            .buffered_writer = null,
+            .is_tls = false,
+            .tls_client = null,
+            .tls_read_buffer = &[_]u8{},
+            .tls_write_buffer = &[_]u8{},
+            .ca_bundle = null,
             .connected = false,
             .last_used = std.time.milliTimestamp(),
-            .is_tls = false,
+            .allocator = allocator,
         };
     }
     
     fn isConnected(self: Connection) bool {
-        return self.connected and self.stream != null;
+        return self.connected and self.tcp_stream != null;
+    }
+    
+    fn deinit(self: *Connection) void {
+        if (self.stream_read_buffer.len > 0) {
+            self.allocator.free(self.stream_read_buffer);
+        }
+        if (self.stream_write_buffer.len > 0) {
+            self.allocator.free(self.stream_write_buffer);
+        }
+        if (self.tls_read_buffer.len > 0) {
+            self.allocator.free(self.tls_read_buffer);
+        }
+        if (self.tls_write_buffer.len > 0) {
+            self.allocator.free(self.tls_write_buffer);
+        }
+        if (self.ca_bundle) |*bundle| {
+            bundle.deinit(self.allocator);
+        }
+        if (self.tcp_stream) |stream| {
+            stream.close();
+        }
     }
     
     fn connect(self: *Connection, allocator: std.mem.Allocator, scheme: []const u8, host: []const u8, port: u16, options: ClientOptions) !void {
         if (self.isConnected()) return;
         
-        // Connect to server with hostname resolution
-        const stream = try net.tcpConnectToHost(allocator, host, port);
+        // Connect to TCP server
+        self.tcp_stream = try net.tcpConnectToHost(allocator, host, port);
+        
+        // Allocate stable I/O buffers - these will have stable memory addresses
+        const min_buf_len = std.crypto.tls.max_ciphertext_record_len;
+        self.stream_read_buffer = try allocator.alloc(u8, min_buf_len);
+        errdefer allocator.free(self.stream_read_buffer);
+        self.stream_write_buffer = try allocator.alloc(u8, min_buf_len);
+        errdefer allocator.free(self.stream_write_buffer);
+        
+        // Create stable buffered readers/writers from the stable TCP stream
+        self.buffered_reader = self.tcp_stream.?.reader(self.stream_read_buffer);
+        self.buffered_writer = self.tcp_stream.?.writer(self.stream_write_buffer);
         
         if (std.mem.eql(u8, scheme, "https")) {
-            // Initialize TLS client properly
-            try self.initTlsConnection(allocator, stream, host, options.tls);
-        } else {
-            self.stream = stream;
-            self.is_tls = false;
+            try self.initTls(host, options.tls);
         }
+        
         self.connected = true;
         self.last_used = std.time.milliTimestamp();
     }
     
     fn close(self: *Connection) void {
-        if (self.tls) |tls_conn| {
-            tls_conn.deinit();
-            tls_conn.allocator.destroy(tls_conn);
-            self.tls = null;
-        }
-        
-        if (self.stream) |stream| {
-            stream.close();
-            self.stream = null;
-        }
-        
+        // Note: deinit() handles all cleanup including TLS, CA bundle, and TCP stream
+        self.deinit();
         self.connected = false;
         self.is_tls = false;
     }
     
-    fn initTlsConnection(self: *Connection, allocator: std.mem.Allocator, stream: net.Stream, host: []const u8, tls_options: ClientOptions.TlsOptions) !void {
-        // Store the stream
-        self.stream = stream;
-        
-        // Allocate TLS connection structure
-        const tls_conn = try allocator.create(TlsConnection);
-        errdefer allocator.destroy(tls_conn);
-        
-        // Allocate separate buffers for TLS client and stream I/O
+    fn initTls(self: *Connection, host: []const u8, tls_options: ClientOptions.TlsOptions) !void {
+        // Allocate TLS buffers with stable memory addresses
         const min_buf_len = std.crypto.tls.max_ciphertext_record_len;
-        
-        // TLS client buffers
-        const tls_read_buffer = try allocator.alloc(u8, min_buf_len);
-        errdefer allocator.free(tls_read_buffer);
-        
-        const tls_write_buffer = try allocator.alloc(u8, min_buf_len);
-        errdefer allocator.free(tls_write_buffer);
-        
-        // Stream buffers (separate from TLS buffers)
-        const stream_read_buffer = try allocator.alloc(u8, min_buf_len);
-        errdefer allocator.free(stream_read_buffer);
-        
-        const stream_write_buffer = try allocator.alloc(u8, min_buf_len);  
-        errdefer allocator.free(stream_write_buffer);
-        
-        // Create stream readers and writers using the stream buffers
-        var stream_reader = stream.reader(stream_read_buffer);
-        var stream_writer = stream.writer(stream_write_buffer);
+        self.tls_read_buffer = try self.allocator.alloc(u8, min_buf_len);
+        errdefer self.allocator.free(self.tls_read_buffer);
+        self.tls_write_buffer = try self.allocator.alloc(u8, min_buf_len);
+        errdefer self.allocator.free(self.tls_write_buffer);
         
         // Load CA bundle if certificate verification is enabled
-        var ca_bundle_opt: ?crypto.Certificate.Bundle = null;
         if (tls_options.verify_certificates) {
             var ca_bundle = crypto.Certificate.Bundle{};
-            try ca_bundle.rescan(allocator);
-            ca_bundle_opt = ca_bundle;
+            try ca_bundle.rescan(self.allocator);
+            self.ca_bundle = ca_bundle;
         }
-        errdefer if (ca_bundle_opt) |*bundle| bundle.deinit(allocator);
+        errdefer if (self.ca_bundle) |*bundle| bundle.deinit(self.allocator);
         
-        // Initialize TLS client with proper options
+        // Initialize TLS client with stable reader/writer references
         const tls_client_options = if (tls_options.verify_certificates) 
             crypto.tls.Client.Options{
                 .host = .{ .explicit = host },
-                .ca = .{ .bundle = ca_bundle_opt.? },
-                .write_buffer = tls_write_buffer,
-                .read_buffer = tls_read_buffer,
+                .ca = .{ .bundle = self.ca_bundle.? },
+                .write_buffer = self.tls_write_buffer,
+                .read_buffer = self.tls_read_buffer,
             }
         else 
             crypto.tls.Client.Options{
                 .host = .no_verification,
                 .ca = .no_verification,
-                .write_buffer = tls_write_buffer,
-                .read_buffer = tls_read_buffer,
+                .write_buffer = self.tls_write_buffer,
+                .read_buffer = self.tls_read_buffer,
             };
         
-        // Initialize TLS client - handshake is performed automatically during init
+        // Initialize TLS client with stable buffered reader/writer interfaces
+        // The buffered_reader/writer are stable fields in this Connection object
         std.log.info("Initializing TLS handshake...", .{});
-        const tls_client = try std.crypto.tls.Client.init(stream_reader.interface(), &stream_writer.interface, tls_client_options);
+        self.tls_client = try std.crypto.tls.Client.init(
+            self.buffered_reader.?.interface(), 
+            &self.buffered_writer.?.interface, 
+            tls_client_options
+        );
         std.log.info("TLS handshake completed successfully!", .{});
         
-        // Set up the TLS connection structure
-        tls_conn.* = TlsConnection{
-            .client = tls_client,
-            .tls_read_buffer = tls_read_buffer,
-            .tls_write_buffer = tls_write_buffer,
-            .stream_read_buffer = stream_read_buffer,
-            .stream_write_buffer = stream_write_buffer,
-            .stream_writer = stream_writer,  // Store the writer used during TLS init
-            .ca_bundle = ca_bundle_opt,  // Store CA bundle for cleanup
-            .allocator = allocator,
-        };
-        
-        self.tls = tls_conn;
         self.is_tls = true;
     }
     
     fn read(self: *Connection, buffer: []u8) !usize {
         if (self.is_tls) {
-            if (self.tls) |tls_conn| {
+            if (self.tls_client) |*tls_client| {
                 std.log.info("Reading from TLS client...", .{});
-                const bytes_read = tls_conn.client.reader.readSliceShort(buffer) catch |err| {
+                const bytes_read = tls_client.reader.readSliceShort(buffer) catch |err| {
                     std.log.err("TLS read error: {}", .{err});
                     return err;
                 };
@@ -513,24 +566,27 @@ const Connection = struct {
                 return bytes_read;
             }
         }
-        return try self.stream.?.read(buffer);
+        return try self.tcp_stream.?.read(buffer);
     }
     
     fn writeAll(self: *Connection, bytes: []const u8) !void {
         if (self.is_tls) {
-            if (self.tls) |tls_conn| {
-                return try tls_conn.client.writer.writeAll(bytes);
+            if (self.tls_client) |*tls_client| {
+                return try tls_client.writer.writeAll(bytes);
             }
         }
-        return try self.stream.?.writeAll(bytes);
+        return try self.tcp_stream.?.writeAll(bytes);
     }
     
     fn flush(self: *Connection) !void {
         if (self.is_tls) {
-            if (self.tls) |tls_conn| {
-                try tls_conn.client.writer.flush();
-                // Use the exact same stream writer that was used during TLS initialization
-                try tls_conn.stream_writer.interface.flush();
+            if (self.tls_client) |*tls_client| {
+                try tls_client.writer.flush();
+                // Also flush the underlying buffered writer
+                try self.buffered_writer.?.interface.flush();
+                
+                // Add delay like in working example to allow server to process request
+                std.Thread.sleep(100 * std.time.ns_per_ms);
             }
         }
     }
@@ -602,13 +658,7 @@ fn writeRequestToConnection(conn: *Connection, request: Request, url_components:
     
     // For TLS connections, ensure both levels of flushing after complete request
     if (conn.is_tls) {
-        if (conn.tls) |tls_conn| {
-            try tls_conn.client.writer.flush();
-            try tls_conn.stream_writer.interface.flush();  // Use the same writer as during TLS init
-            
-            // Add delay like in working example to allow server to process request
-            std.Thread.sleep(100 * std.time.ns_per_ms);
-        }
+        try conn.flush();
     }
 }
 
@@ -646,35 +696,16 @@ const ConnectionBuffer = struct {
 };
 
 fn readLineFromConnection(conn: *Connection, buffer: []u8) ![]const u8 {
-    // For TLS connections, try the EXACT same approach as the working test
+    // For TLS connections, use the buffered approach
     if (conn.is_tls) {
-        // Read ALL data at once like working example
-        const bytes_read = try conn.read(buffer);
-        if (bytes_read == 0) return error.EndOfStream;
-        
-        std.log.info("Read {} bytes total from TLS", .{bytes_read});
-        std.log.info("Data: {s}", .{buffer[0..@min(200, bytes_read)]});
-        
-        // Find first line ending
-        for (buffer[0..bytes_read], 0..) |byte, i| {
-            if (byte == '\n') {
-                var line_len = i;
-                if (line_len > 0 and buffer[line_len - 1] == '\r') {
-                    line_len -= 1;
-                }
-                return buffer[0..line_len];
-            }
-        }
-        
-        // No line ending found, return all data
-        return buffer[0..bytes_read];
+        return readLineFromTlsConnection(conn, buffer);
     }
     
     // For regular connections, read byte by byte
     var pos: usize = 0;
     while (pos < buffer.len - 1) {
         var byte_buffer: [1]u8 = undefined;
-        const bytes_read = try conn.read(&byte_buffer);
+        const bytes_read = conn.read(&byte_buffer) catch |err| return err;
         if (bytes_read == 0) return error.EndOfStream;
         
         const byte = byte_buffer[0];
