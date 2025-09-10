@@ -144,34 +144,37 @@ pub const StatusLine = struct {
     reason: []const u8,
 };
 
-/// Chunked encoding reader
-pub const ChunkedReader = struct {
-    reader: *std.Io.Reader,
-    state: State,
-    chunk_size: u64,
-    chunk_remaining: u64,
-    finished: bool,
-    
-    const State = enum {
-        reading_size,
-        reading_chunk,
-        reading_chunk_trailer,
-        reading_trailers,
-        finished,
-    };
-    
-    pub fn init(reader: *std.Io.Reader) ChunkedReader {
-        return ChunkedReader{
-            .reader = reader,
-            .state = .reading_size,
-            .chunk_size = 0,
-            .chunk_remaining = 0,
-            .finished = false,
+/// Chunked encoding reader - generic over reader type
+pub fn ChunkedReader(comptime ReaderType: type) type {
+    return struct {
+        reader: ReaderType,
+        state: State,
+        chunk_size: u64,
+        chunk_remaining: u64,
+        finished: bool,
+        
+        const State = enum {
+            reading_size,
+            reading_chunk,
+            reading_chunk_trailer,
+            reading_trailers,
+            finished,
         };
-    }
-    
-    /// Read data from chunked stream
-    pub fn read(self: *ChunkedReader, buffer: []u8) !usize {
+        
+        const Self = @This();
+        
+        pub fn init(reader: ReaderType) Self {
+            return Self{
+                .reader = reader,
+                .state = .reading_size,
+                .chunk_size = 0,
+                .chunk_remaining = 0,
+                .finished = false,
+            };
+        }
+        
+        /// Read data from chunked stream
+        pub fn read(self: *Self, buffer: []u8) !usize {
         if (self.finished) return 0;
         
         var total_read: usize = 0;
@@ -198,7 +201,7 @@ pub const ChunkedReader = struct {
                 },
                 .reading_chunk => {
                     const to_read = @min(buffer.len - total_read, self.chunk_remaining);
-                    const bytes_read = try self.reader.readSliceShort(buffer[total_read .. total_read + to_read]);
+                    const bytes_read = try self.reader.interface().*.readSliceShort(buffer[total_read .. total_read + to_read]);
                     
                     if (bytes_read == 0) return error.UnexpectedEndOfFile;
                     
@@ -212,7 +215,7 @@ pub const ChunkedReader = struct {
                 .reading_chunk_trailer => {
                     // Read CRLF after chunk data
                     var trailer: [2]u8 = undefined;
-                    const bytes_read = try self.reader.readSliceShort(&trailer);
+                    const bytes_read = try self.reader.interface().*.readSliceShort(&trailer);
                     if (bytes_read != 2 or trailer[0] != '\r' or trailer[1] != '\n') {
                         return error.ChunkedEncodingError;
                     }
@@ -236,18 +239,25 @@ pub const ChunkedReader = struct {
         return total_read;
     }
     
-    /// Read a line ending with CRLF
-    fn readLine(self: *ChunkedReader, buffer: []u8) ![]const u8 {
+        /// Read a line ending with CRLF
+        fn readLine(self: *Self, buffer: []u8) ![]const u8 {
         var pos: usize = 0;
         while (pos < buffer.len - 1) {
-            const byte = try self.reader.takeByte();
+            var byte_buf: [1]u8 = undefined;
+            const bytes_read = try self.reader.interface().*.readSliceShort(&byte_buf);
+            if (bytes_read == 0) return error.UnexpectedEndOfFile;
+            
+            const byte = byte_buf[0];
             if (byte == '\r') {
-                const next_byte = try self.reader.takeByte();
+                const next_bytes = try self.reader.interface().*.readSliceShort(&byte_buf);
+                if (next_bytes == 0) return error.UnexpectedEndOfFile;
+                const next_byte = byte_buf[0];
                 if (next_byte == '\n') {
                     return buffer[0..pos];
                 } else {
                     buffer[pos] = byte;
                     pos += 1;
+                    if (pos >= buffer.len - 1) break;
                     buffer[pos] = next_byte;
                     pos += 1;
                 }
@@ -257,8 +267,9 @@ pub const ChunkedReader = struct {
             }
         }
         return error.HeadersTooLarge;
-    }
-};
+        }
+    };
+}
 
 test "status line parsing" {
     const line = "HTTP/1.1 200 OK";

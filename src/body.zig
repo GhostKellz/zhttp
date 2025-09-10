@@ -198,9 +198,8 @@ pub const BodyReader = struct {
                 return bytes_read;
             },
             .reader => |reader| {
-                // Use readSliceShort for reading
                 const bytes_read = reader.readSliceShort(buffer) catch |err| switch (err) {
-                    error.ReadFailed => return error.SystemResources,
+                    else => return error.SystemResources,
                 };
                 if (bytes_read == 0) {
                     self.state = .finished;
@@ -213,7 +212,7 @@ pub const BodyReader = struct {
     
     /// Read all data into a buffer
     pub fn readAll(self: *BodyReader, max_size: usize) ![]u8 {
-        var result = std.ArrayList(u8){};
+        var result: std.ArrayList(u8) = .{};
         defer result.deinit(self.allocator);
         
         var buffer: [8192]u8 = undefined;
@@ -227,7 +226,7 @@ pub const BodyReader = struct {
             return error.BodyTooLarge;
         }
         
-        return result.toOwnedSlice(self.allocator);
+        return try result.toOwnedSlice(self.allocator);
     }
 };
 

@@ -18,6 +18,10 @@ pub const Error = @import("error.zig").Error;
 // Convenience functions
 pub const get = @import("client.zig").get;
 pub const post = @import("client.zig").post;
+pub const put = @import("client.zig").put;
+pub const patch = @import("client.zig").patch;
+pub const delete = @import("client.zig").delete;
+pub const head = @import("client.zig").head;
 pub const download = @import("client.zig").download;
 
 // Version check disabled for now - see build.zig.zon minimum_zig_version

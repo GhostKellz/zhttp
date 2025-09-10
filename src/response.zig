@@ -4,8 +4,10 @@ const Body = @import("body.zig");
 
 /// HTTP response
 pub const Response = struct {
+    allocator: std.mem.Allocator,
     status: u16,
     reason: []const u8,
+    reason_owned: bool, // Track if reason string is owned
     version: HttpVersion,
     headers: Header.HeaderMap,
     body_reader: Body.BodyReader,
@@ -36,8 +38,10 @@ pub const Response = struct {
     
     pub fn init(allocator: std.mem.Allocator, status: u16, reason: []const u8, version: HttpVersion) Response {
         return Response{
+            .allocator = allocator,
             .status = status,
             .reason = reason,
+            .reason_owned = false, // reason is not owned by default
             .version = version,
             .headers = Header.HeaderMap.init(allocator),
             .body_reader = Body.BodyReader.init(allocator, Body.Body.empty()),
@@ -45,6 +49,10 @@ pub const Response = struct {
     }
     
     pub fn deinit(self: *Response) void {
+        // Free owned reason string
+        if (self.reason_owned) {
+            self.allocator.free(self.reason);
+        }
         self.headers.deinit();
         self.body_reader.deinit();
     }
@@ -52,12 +60,21 @@ pub const Response = struct {
     /// Set response body
     pub fn setBody(self: *Response, body: Body.Body) void {
         self.body_reader.deinit();
-        self.body_reader = Body.BodyReader.init(self.body_reader.allocator, body);
+        self.body_reader = Body.BodyReader.init(self.allocator, body);
     }
     
     /// Add header
     pub fn addHeader(self: *Response, name: []const u8, value: []const u8) !void {
         try self.headers.append(name, value);
+    }
+    
+    /// Set an owned reason string (takes ownership of the memory)
+    pub fn setOwnedReason(self: *Response, reason: []const u8) void {
+        if (self.reason_owned) {
+            self.allocator.free(self.reason);
+        }
+        self.reason = reason;
+        self.reason_owned = true;
     }
     
     /// Check if status indicates success (2xx)
@@ -205,9 +222,11 @@ pub const ResponseBuilder = struct {
         return self;
     }
     
-    /// Set reason phrase
+    /// Set reason phrase (copies the string)
     pub fn reason(self: *ResponseBuilder, r: []const u8) *ResponseBuilder {
-        self.response.reason = r;
+        // Create owned copy of reason string
+        const owned_reason = self.allocator.dupe(u8, r) catch return self;
+        self.response.setOwnedReason(owned_reason);
         return self;
     }
     

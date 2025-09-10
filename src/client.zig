@@ -9,6 +9,7 @@ const Header = @import("header.zig");
 const Body = @import("body.zig").Body;
 const BodyReader = @import("body.zig").BodyReader;
 const Http1 = @import("http1.zig").Http1;
+const ChunkedReaderGen = @import("http1.zig").ChunkedReader;
 const Error = @import("error.zig").Error;
 
 /// HTTP client configuration
@@ -84,7 +85,38 @@ pub const Client = struct {
     
     /// Send HTTP request with redirect support
     pub fn send(self: *Client, request: Request) !Response {
-        return self.sendWithRedirects(request, 0);
+        return self.sendWithRetries(request, 0);
+    }
+    
+    /// Send with retry logic
+    fn sendWithRetries(self: *Client, request: Request, retry_count: u8) !Response {
+        if (retry_count >= self.options.max_retries) {
+            return Error.DeadlineExceeded;
+        }
+        
+        const result = self.sendWithRedirects(request, 0);
+        
+        // Retry on certain errors
+        if (result) |response| {
+            return response;
+        } else |err| switch (err) {
+            // Retry on connection errors
+            Error.ConnectTimeout,
+            Error.ReadTimeout, 
+            Error.WriteTimeout,
+            Error.ConnectionRefused,
+            Error.ConnectionReset,
+            Error.NetworkUnreachable,
+            Error.SystemResources => {
+                // Exponential backoff
+                if (retry_count > 0) {
+                    const delay_ms = std.math.pow(u64, 2, retry_count) * 1000; // 2^retry * 1s
+                    std.Thread.sleep(delay_ms * std.time.ns_per_ms);
+                }
+                return self.sendWithRetries(request, retry_count + 1);
+            },
+            else => return err,
+        }
     }
     
     fn sendWithRedirects(self: *Client, request: Request, redirect_count: u8) !Response {
@@ -127,7 +159,7 @@ pub const Client = struct {
                 }
                 
                 // Copy relevant headers (except host-specific ones)
-                for (request.headers.headers.items) |header| {
+                for (request.headers.items()) |header| {
                     // Skip host and authorization headers on redirect for security
                     if (!std.mem.eql(u8, header.name, "host") and 
                         !std.mem.eql(u8, header.name, "Host") and
@@ -285,7 +317,7 @@ pub const Client = struct {
     
     /// Read body until connection closes
     fn readUntilCloseFromConnection(self: *Client, conn: *Connection) !Body {
-        var body_data = std.ArrayList(u8){};
+        var body_data: std.ArrayList(u8) = .{};
         defer body_data.deinit(self.allocator);
         
         var buffer: [4096]u8 = undefined;
@@ -300,10 +332,35 @@ pub const Client = struct {
         return Body.fromString(owned_data);
     }
     
-    /// Read chunked body (simplified implementation)
+    /// Read chunked body using proper chunked encoding
     fn readChunkedBodyFromConnection(self: *Client, conn: *Connection) !Body {
-        // For now, just read until close - proper chunked implementation would be more complex
-        return self.readUntilCloseFromConnection(conn);
+        const reader = conn.buffered_reader orelse return error.ConnectionNotReady;
+        const ChunkedReaderType = ChunkedReaderGen(@TypeOf(reader));
+        var chunked_reader = ChunkedReaderType.init(reader);
+        
+        var body_data: std.ArrayList(u8) = .{};
+        defer body_data.deinit(self.allocator);
+        
+        var buffer: [4096]u8 = undefined;
+        while (true) {
+            const bytes_read = chunked_reader.read(&buffer) catch |err| switch (err) {
+                error.ChunkedEncodingError => return Error.ChunkedEncodingError,
+                error.UnexpectedEndOfFile => return Error.UnexpectedEndOfFile,
+                error.HeadersTooLarge => return Error.HeadersTooLarge,
+                else => return Error.ProtocolError,
+            };
+            
+            if (bytes_read == 0) break;
+            try body_data.appendSlice(self.allocator, buffer[0..bytes_read]);
+            
+            // Check if we've exceeded max body size
+            if (body_data.items.len > self.options.max_body_size) {
+                return Error.BodyTooLarge;
+            }
+        }
+        
+        const owned_data = try body_data.toOwnedSlice(self.allocator);
+        return Body.fromString(owned_data);
     }
     
     /// Create body reader based on response headers
@@ -331,7 +388,7 @@ pub const Client = struct {
 const ConnectionPool = struct {
     allocator: std.mem.Allocator,
     options: ClientOptions.PoolOptions,
-    connections: std.HashMap(ConnectionKey, std.ArrayList(*Connection), ConnectionKeyContext, std.hash_map.default_max_load_percentage),
+    connections: std.HashMap(ConnectionKey, std.ArrayListUnmanaged(*Connection), ConnectionKeyContext, std.hash_map.default_max_load_percentage),
     mutex: std.Thread.Mutex,
     
     const ConnectionKey = struct {
@@ -376,7 +433,7 @@ const ConnectionPool = struct {
         var iterator = self.connections.iterator();
         while (iterator.next()) |entry| {
             for (entry.value_ptr.items) |conn| {
-                conn.close();
+                conn.deinit();
                 self.allocator.destroy(conn);
             }
             entry.value_ptr.deinit(self.allocator);
@@ -401,14 +458,90 @@ const ConnectionPool = struct {
         // Create new connection
         const conn = try self.allocator.create(Connection);
         conn.* = try Connection.init(self.allocator);
+        
+        // Store owned copies of the connection key strings
+        const owned_scheme = try self.allocator.dupe(u8, scheme);
+        const owned_host = try self.allocator.dupe(u8, host);
+        conn.pool_key = ConnectionKey{
+            .scheme = owned_scheme,
+            .host = owned_host,
+            .port = port,
+        };
+        
         return conn;
     }
     
     fn releaseConnection(self: *ConnectionPool, conn: *Connection) void {
-        // TODO: Implement connection reuse logic
-        // For now, just close the connection
-        conn.deinit();
-        self.allocator.destroy(conn);
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        
+        // Check if connection is still usable and has a key
+        if (!conn.isConnected() or conn.pool_key == null) {
+            conn.deinit();
+            self.allocator.destroy(conn);
+            return;
+        }
+        
+        // Update last used timestamp
+        conn.last_used = std.time.milliTimestamp();
+        
+        const key = conn.pool_key.?;
+        
+        // Get or create connection list for this key
+        const result = self.connections.getOrPut(key) catch {
+            // If we can't store it, just close it
+            conn.deinit();
+            self.allocator.destroy(conn);
+            return;
+        };
+        
+        if (!result.found_existing) {
+            result.value_ptr.* = std.ArrayListUnmanaged(*Connection){};
+        }
+        
+        // Check if we've exceeded the per-host limit
+        if (result.value_ptr.items.len >= self.options.max_per_host) {
+            // Remove oldest connection
+            if (result.value_ptr.items.len > 0) {
+                const oldest = result.value_ptr.orderedRemove(0);
+                oldest.deinit();
+                self.allocator.destroy(oldest);
+            }
+        }
+        
+        // Add this connection to the pool
+        result.value_ptr.append(self.allocator, conn) catch {
+            // If we can't store it, just close it
+            conn.deinit();
+            self.allocator.destroy(conn);
+        };
+    }
+    
+    /// Clean up idle connections that have exceeded the idle timeout
+    fn cleanupIdleConnections(self: *ConnectionPool) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        
+        const now = std.time.milliTimestamp();
+        var iterator = self.connections.iterator();
+        
+        while (iterator.next()) |entry| {
+            const conn_list = entry.value_ptr;
+            var i: usize = 0;
+            while (i < conn_list.items.len) {
+                const conn = conn_list.items[i];
+                const idle_time = now - conn.last_used;
+                
+                if (idle_time > self.options.idle_timeout) {
+                    _ = conn_list.orderedRemove(i);
+                    conn.deinit();
+                    self.allocator.destroy(conn);
+                    // Don't increment i since we removed an item
+                } else {
+                    i += 1;
+                }
+            }
+        }
     }
 };
 
@@ -434,6 +567,9 @@ const Connection = struct {
     last_used: i64,
     allocator: std.mem.Allocator,
     
+    // Connection pool key for this connection
+    pool_key: ?ConnectionPool.ConnectionKey,
+    
     fn init(allocator: std.mem.Allocator) !Connection {
         return Connection{
             .tcp_stream = null,
@@ -449,6 +585,7 @@ const Connection = struct {
             .connected = false,
             .last_used = std.time.milliTimestamp(),
             .allocator = allocator,
+            .pool_key = null,
         };
     }
     
@@ -457,6 +594,12 @@ const Connection = struct {
     }
     
     fn deinit(self: *Connection) void {
+        // Free pool key strings if owned
+        if (self.pool_key) |key| {
+            self.allocator.free(key.scheme);
+            self.allocator.free(key.host);
+        }
+        
         if (self.stream_read_buffer.len > 0) {
             self.allocator.free(self.stream_read_buffer);
         }
@@ -480,8 +623,15 @@ const Connection = struct {
     fn connect(self: *Connection, allocator: std.mem.Allocator, scheme: []const u8, host: []const u8, port: u16, options: ClientOptions) !void {
         if (self.isConnected()) return;
         
-        // Connect to TCP server
-        self.tcp_stream = try net.tcpConnectToHost(allocator, host, port);
+        // Connect to TCP server with timeout
+        self.tcp_stream = net.tcpConnectToHost(allocator, host, port) catch |err| switch (err) {
+            error.ConnectionRefused => return Error.ConnectionRefused,
+            error.NetworkUnreachable => return Error.NetworkUnreachable,
+            error.ConnectionTimedOut => return Error.ConnectTimeout,
+            error.SystemResources => return Error.SystemResources,
+            error.PermissionDenied => return Error.PermissionDenied,
+            else => return Error.SystemResources,
+        };
         
         // Allocate stable I/O buffers - these will have stable memory addresses
         const min_buf_len = std.crypto.tls.max_ciphertext_record_len;
@@ -595,7 +745,7 @@ const Connection = struct {
 
 /// Write HTTP request to connection
 fn writeRequestToConnection(conn: *Connection, request: Request, url_components: @import("request.zig").UrlComponents) !void {
-    var request_buffer = std.ArrayList(u8){};
+    var request_buffer: std.ArrayList(u8) = .{};
     defer request_buffer.deinit(std.heap.page_allocator);
     
     // Build request line
@@ -809,6 +959,52 @@ pub fn post(allocator: std.mem.Allocator, url: []const u8, body: Body) !Response
     var request = Request.init(allocator, .POST, url);
     defer request.deinit();
     request.setBody(body);
+    
+    return client.send(request);
+}
+
+/// Convenience function to make a PUT request
+pub fn put(allocator: std.mem.Allocator, url: []const u8, body: Body) !Response {
+    var client = Client.init(allocator, ClientOptions{});
+    defer client.deinit();
+    
+    var request = Request.init(allocator, .PUT, url);
+    defer request.deinit();
+    request.setBody(body);
+    
+    return client.send(request);
+}
+
+/// Convenience function to make a PATCH request
+pub fn patch(allocator: std.mem.Allocator, url: []const u8, body: Body) !Response {
+    var client = Client.init(allocator, ClientOptions{});
+    defer client.deinit();
+    
+    var request = Request.init(allocator, .PATCH, url);
+    defer request.deinit();
+    request.setBody(body);
+    
+    return client.send(request);
+}
+
+/// Convenience function to make a DELETE request
+pub fn delete(allocator: std.mem.Allocator, url: []const u8) !Response {
+    var client = Client.init(allocator, ClientOptions{});
+    defer client.deinit();
+    
+    var request = Request.init(allocator, .DELETE, url);
+    defer request.deinit();
+    
+    return client.send(request);
+}
+
+/// Convenience function to make a HEAD request
+pub fn head(allocator: std.mem.Allocator, url: []const u8) !Response {
+    var client = Client.init(allocator, ClientOptions{});
+    defer client.deinit();
+    
+    var request = Request.init(allocator, .HEAD, url);
+    defer request.deinit();
     
     return client.send(request);
 }
