@@ -4,8 +4,10 @@ const std = @import("std");
 pub const Body = union(enum) {
     /// No body
     none: void,
-    /// Static bytes
+    /// Static bytes (not owned)
     bytes: []const u8,
+    /// Owned bytes (owned and will be freed)
+    owned_bytes: []u8,
     /// Reader interface for streaming
     reader: *std.Io.Reader,
     /// File path for file uploads/downloads
@@ -18,6 +20,7 @@ pub const Body = union(enum) {
         return switch (self) {
             .none => 0,
             .bytes => |bytes| bytes.len,
+            .owned_bytes => |bytes| bytes.len,
             .file => |_| null, // Would need to stat the file
             .reader, .multipart => null, // Unknown length for streams
         };
@@ -28,13 +31,19 @@ pub const Body = union(enum) {
         return switch (self) {
             .none => true,
             .bytes => |bytes| bytes.len == 0,
+            .owned_bytes => |bytes| bytes.len == 0,
             else => false,
         };
     }
     
-    /// Create body from string
+    /// Create body from string (not owned)
     pub fn fromString(str: []const u8) Body {
         return Body{ .bytes = str };
+    }
+    
+    /// Create body from owned string (takes ownership)
+    pub fn fromOwnedString(str: []u8) Body {
+        return Body{ .owned_bytes = str };
     }
     
     /// Create body from file path
@@ -50,6 +59,18 @@ pub const Body = union(enum) {
     /// Create empty body
     pub fn empty() Body {
         return Body{ .none = {} };
+    }
+    
+    /// Free owned memory
+    pub fn deinit(self: Body, allocator: std.mem.Allocator) void {
+        switch (self) {
+            .owned_bytes => |bytes| allocator.free(bytes),
+            .multipart => |*multipart| {
+                var mutable_multipart = multipart.*;
+                mutable_multipart.deinit();
+            },
+            else => {},
+        }
     }
 };
 
@@ -144,6 +165,8 @@ pub const BodyReader = struct {
             .file => |*file_state| file_state.file.close(),
             else => {},
         }
+        // Clean up the body itself
+        self.body.deinit(self.allocator);
     }
     
     /// Read data from the body
@@ -157,6 +180,10 @@ pub const BodyReader = struct {
                         return 0;
                     },
                     .bytes => |bytes| {
+                        self.state = .{ .bytes = .{ .data = bytes, .pos = 0 } };
+                        return self.read(buffer);
+                    },
+                    .owned_bytes => |bytes| {
                         self.state = .{ .bytes = .{ .data = bytes, .pos = 0 } };
                         return self.read(buffer);
                     },

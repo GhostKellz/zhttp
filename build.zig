@@ -56,7 +56,15 @@ pub fn build(b: *std.Build) void {
     build_options.addOption(bool, "with_zlib", with_zlib);
     build_options.addOption([]const u8, "quic_backend", quic_backend);
     
-    mod.addImport("build_options", build_options.createModule());
+    // Create a single build_options module
+    const build_options_module = build_options.createModule();
+    mod.addImport("build_options", build_options_module);
+    
+    // Add zsync dependency if async is enabled
+    if (enable_async) {
+        const zsync = b.dependency("zsync", .{});
+        mod.addImport("zsync", zsync.module("zsync"));
+    }
 
     // Here we define an executable. An executable needs to have a root module
     // which needs to expose a `main` function. While we could add a main function
@@ -90,13 +98,8 @@ pub fn build(b: *std.Build) void {
             // List of modules available for import in source files part of the
             // root module.
             .imports = &.{
-                // Here "zhttp" is the name you will use in your source code to
-                // import this module (e.g. `@import("zhttp")`). The name is
-                // repeated because you are allowed to rename your imports, which
-                // can be extremely useful in case of collisions (which can happen
-                // importing modules from different packages).
                 .{ .name = "zhttp", .module = mod },
-                .{ .name = "build_options", .module = build_options.createModule() },
+                .{ .name = "build_options", .module = build_options_module },
             },
         }),
     });
@@ -173,6 +176,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "exact_copy_test", .path = "examples/exact_copy_test.zig", .desc = "Exact copy of working TLS example with HTTP client pattern" },
         .{ .name = "test_https_with_verification", .path = "examples/test_https_with_verification.zig", .desc = "HTTPS test with certificate verification enabled" },
         .{ .name = "debug_tls_connection_only", .path = "examples/debug_tls_connection_only.zig", .desc = "Test HTTP client TLS setup in isolation" },
+        .{ .name = "async_get", .path = "examples/async_get.zig", .desc = "Async GET request using zsync runtime" },
     };
 
     for (examples) |example| {
@@ -182,9 +186,13 @@ pub fn build(b: *std.Build) void {
                 .root_source_file = b.path(example.path),
                 .target = target,
                 .optimize = optimize,
-                .imports = &.{
+                .imports = if (enable_async) &.{
                     .{ .name = "zhttp", .module = mod },
-                    .{ .name = "build_options", .module = build_options.createModule() },
+                    .{ .name = "build_options", .module = build_options_module },
+                    .{ .name = "zsync", .module = b.dependency("zsync", .{}).module("zsync") },
+                } else &.{
+                    .{ .name = "zhttp", .module = mod },
+                    .{ .name = "build_options", .module = build_options_module },
                 },
             }),
         });

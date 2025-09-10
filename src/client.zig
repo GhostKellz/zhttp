@@ -253,6 +253,7 @@ pub const Client = struct {
         // Create response with owned reason string
         const owned_reason = try self.allocator.dupe(u8, status_line.reason);
         var response = Response.init(self.allocator, status_line.status, owned_reason, status_line.version);
+        response.setOwnedReason(owned_reason); // Mark reason as owned for cleanup
         
         // Parse headers
         while (line_iter.next()) |line| {
@@ -262,7 +263,7 @@ pub const Client = struct {
             // Duplicate header name and value for persistence
             const owned_name = try self.allocator.dupe(u8, header.name);
             const owned_value = try self.allocator.dupe(u8, header.value);
-            try response.addHeader(owned_name, owned_value);
+            try response.headers.appendOwned(owned_name, owned_value);
         }
         
         // Find body start
@@ -273,7 +274,7 @@ pub const Client = struct {
             const body_data = data[body_start..];
             // Allocate persistent memory for body data
             const owned_body_data = try self.allocator.dupe(u8, body_data);
-            response.setBody(Body.fromString(owned_body_data));
+            response.setBody(Body.fromOwnedString(owned_body_data));
         }
         
         return response;
@@ -312,7 +313,7 @@ pub const Client = struct {
             return error.IncompleteBody;
         }
         
-        return Body.fromString(body_data);
+        return Body.fromOwnedString(body_data);
     }
     
     /// Read body until connection closes
@@ -329,7 +330,7 @@ pub const Client = struct {
         }
         
         const owned_data = try body_data.toOwnedSlice(self.allocator);
-        return Body.fromString(owned_data);
+        return Body.fromOwnedString(owned_data);
     }
     
     /// Read chunked body using proper chunked encoding
@@ -360,7 +361,7 @@ pub const Client = struct {
         }
         
         const owned_data = try body_data.toOwnedSlice(self.allocator);
-        return Body.fromString(owned_data);
+        return Body.fromOwnedString(owned_data);
     }
     
     /// Create body reader based on response headers

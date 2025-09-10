@@ -42,17 +42,22 @@ pub const Header = struct {
 pub const HeaderMap = struct {
     allocator: std.mem.Allocator,
     headers: std.ArrayList(Header),
+    owned_strings: std.ArrayList([]u8), // Track owned strings for cleanup
     
     pub fn init(allocator: std.mem.Allocator) HeaderMap {
         return HeaderMap{
             .allocator = allocator,
             .headers = std.ArrayList(Header){},
+            .owned_strings = std.ArrayList([]u8){},
         };
     }
     
     pub fn deinit(self: *HeaderMap) void {
-        // Note: We don't own the header name/value strings, 
-        // they should be managed by the caller
+        // Free all owned strings
+        for (self.owned_strings.items) |owned_str| {
+            self.allocator.free(owned_str);
+        }
+        self.owned_strings.deinit(self.allocator);
         self.headers.deinit(self.allocator);
     }
     
@@ -60,6 +65,20 @@ pub const HeaderMap = struct {
     pub fn append(self: *HeaderMap, name: []const u8, value: []const u8) !void {
         if (!Header.isValidName(name)) return error.InvalidHeader;
         if (!Header.isValidValue(value)) return error.InvalidHeader;
+        
+        try self.headers.append(self.allocator, Header.init(name, value));
+    }
+    
+    /// Add a header with owned strings (takes ownership of the memory)
+    pub fn appendOwned(self: *HeaderMap, name: []u8, value: []u8) !void {
+        if (!Header.isValidName(name)) return error.InvalidHeader;
+        if (!Header.isValidValue(value)) return error.InvalidHeader;
+        
+        // Track owned strings for cleanup
+        try self.owned_strings.append(self.allocator, name);
+        errdefer self.allocator.free(name);
+        try self.owned_strings.append(self.allocator, value);
+        errdefer self.allocator.free(value);
         
         try self.headers.append(self.allocator, Header.init(name, value));
     }
@@ -78,6 +97,30 @@ pub const HeaderMap = struct {
                 i += 1;
             }
         }
+        
+        try self.headers.append(self.allocator, Header.init(name, value));
+    }
+    
+    /// Set a header with owned strings, replacing any existing header with same name
+    pub fn setOwned(self: *HeaderMap, name: []u8, value: []u8) !void {
+        if (!Header.isValidName(name)) return error.InvalidHeader;
+        if (!Header.isValidValue(value)) return error.InvalidHeader;
+        
+        // Remove existing headers with same name
+        var i: usize = 0;
+        while (i < self.headers.items.len) {
+            if (self.headers.items[i].nameEquals(name)) {
+                _ = self.headers.orderedRemove(i);
+            } else {
+                i += 1;
+            }
+        }
+        
+        // Track owned strings for cleanup
+        try self.owned_strings.append(self.allocator, name);
+        errdefer self.allocator.free(name);
+        try self.owned_strings.append(self.allocator, value);
+        errdefer self.allocator.free(value);
         
         try self.headers.append(self.allocator, Header.init(name, value));
     }

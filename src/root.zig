@@ -1,8 +1,15 @@
 const std = @import("std");
 
+// Build options for conditional compilation
+const build_options = @import("build_options");
+
 // Core public API
 pub const Client = @import("client.zig").Client;
 pub const ClientOptions = @import("client.zig").ClientOptions;
+
+// Async API (available when async is enabled)
+pub const AsyncClient = @import("async_client.zig").AsyncClient;
+pub const AsyncClientOptions = @import("async_client.zig").AsyncClientOptions;
 pub const Request = @import("request.zig").Request;
 pub const RequestBuilder = @import("request.zig").RequestBuilder;
 pub const Response = @import("response.zig").Response;
@@ -23,6 +30,10 @@ pub const patch = @import("client.zig").patch;
 pub const delete = @import("client.zig").delete;
 pub const head = @import("client.zig").head;
 pub const download = @import("client.zig").download;
+
+// Async convenience functions (available when async is enabled) 
+pub const getAsync = @import("async_client.zig").getAsync;
+pub const postAsync = @import("async_client.zig").postAsync;
 
 // Version check disabled for now - see build.zig.zon minimum_zig_version
 
