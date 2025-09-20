@@ -1,3 +1,7 @@
+<div align="center">
+  <img src="assets/icons/zhttp.png" alt="zhttp logo" width="200">
+</div>
+
 # 🚀 zhttp
 
 [![Zig Version](https://img.shields.io/badge/zig-0.16.0--dev-orange.svg)](https://ziglang.org/)
