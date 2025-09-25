@@ -9,6 +9,14 @@
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)](https://github.com/ghostkellz/zhttp)
 [![Documentation](https://img.shields.io/badge/docs-available-brightgreen.svg)](DOCS.md)
 
+## DISCLAIMER
+
+⚠️ **EXPERIMENTAL LIBRARY - FOR LAB/PERSONAL USE** ⚠️
+
+This is an experimental library under active development. It is
+intended for research, learning, and personal projects. The API is subject
+to change!
+
 A modern, fast, and feature-rich HTTP client library for Zig with TLS support, connection pooling, and an intuitive API.
 
 ## ✨ Features
