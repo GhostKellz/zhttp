@@ -14,8 +14,10 @@ const Http1 = @import("http1.zig").Http1;
 const ChunkedReaderGen = @import("http1.zig").ChunkedReader;
 const Error = @import("error.zig").Error;
 
-// Conditionally import zsync if enabled
-const zsync = if (build_options.enable_async) @import("zsync") else struct {};
+// Import homebrew async runtime
+const AsyncRuntime = @import("async_runtime.zig");
+const EventLoop = AsyncRuntime.EventLoop;
+const AsyncIO = AsyncRuntime.AsyncIO;
 
 /// Async HTTP client configuration
 pub const AsyncClientOptions = struct {
@@ -70,7 +72,7 @@ pub const AsyncClientOptions = struct {
     };
 };
 
-/// Async HTTP client with zsync integration
+/// Async HTTP client with homebrew async runtime
 pub const AsyncClient = if (!build_options.enable_async) struct {
     // Provide a stub implementation when async is disabled
     pub fn init(allocator: std.mem.Allocator, options: AsyncClientOptions) @This() {
@@ -83,9 +85,9 @@ pub const AsyncClient = if (!build_options.enable_async) struct {
         _ = self;
     }
     
-    pub fn send(self: *@This(), io: anytype, request: Request) !Response {
+    pub fn send(self: *@This(), event_loop: *EventLoop, request: Request) !Response {
         _ = self;
-        _ = io;
+        _ = event_loop;
         _ = request;
         return Error.AsyncNotEnabled;
     }
@@ -108,44 +110,47 @@ pub const AsyncClient = if (!build_options.enable_async) struct {
         self.pool.deinit();
     }
     
-    /// Send HTTP request asynchronously using zsync
-    pub fn send(self: *Self, io: *zsync.Io, request: Request) !Response {
-        return self.sendWithRetries(io, request, 0);
+    /// Send HTTP request asynchronously using homebrew runtime
+    pub fn send(self: *Self, event_loop: *EventLoop, request: Request) !Response {
+        return self.sendWithRetries(event_loop, request, 0);
     }
-    
+
     /// Send with retry logic
-    fn sendWithRetries(self: *Self, io: *zsync.Io, request: Request, retry_count: u8) !Response {
+    fn sendWithRetries(self: *Self, event_loop: *EventLoop, request: Request, retry_count: u8) !Response {
         if (retry_count >= self.options.max_retries) {
             return Error.DeadlineExceeded;
         }
-        
-        const result = self.sendWithRedirects(io, request, 0);
-        
+
+        const result = self.sendWithRedirects(event_loop, request, 0);
+
         if (result) |response| {
             return response;
         } else |err| switch (err) {
             // Retry on certain errors
             Error.ConnectTimeout,
-            Error.ReadTimeout, 
+            Error.ReadTimeout,
             Error.WriteTimeout,
             Error.ConnectionRefused,
             Error.ConnectionReset,
             Error.NetworkUnreachable,
             Error.SystemResources => {
-                // Exponential backoff using zsync timer
+                // Exponential backoff using async timer
                 if (retry_count > 0) {
                     const delay_ms = std.math.pow(u64, 2, retry_count) * 1000; // 2^retry * 1s
-                    // Use zsync sleep for backoff delay
-                    // For now use simple sleep - can be improved with zsync timer
-                    std.Thread.sleep(delay_ms * std.time.ns_per_ms);
+                    // Schedule timer for backoff delay
+                    _ = try event_loop.scheduleTimer(delay_ms, struct {
+                        fn callback(timer: *AsyncRuntime.Timer) void {
+                            _ = timer;
+                        }
+                    }.callback);
                 }
-                return self.sendWithRetries(io, request, retry_count + 1);
+                return self.sendWithRetries(event_loop, request, retry_count + 1);
             },
             else => return err,
         }
     }
-    
-    fn sendWithRedirects(self: *Self, io: *zsync.Io, request: Request, redirect_count: u8) !Response {
+
+    fn sendWithRedirects(self: *Self, event_loop: *EventLoop, request: Request, redirect_count: u8) !Response {
         if (redirect_count >= self.options.max_redirects) {
             return Error.TooManyRedirects;
         }
@@ -155,9 +160,9 @@ pub const AsyncClient = if (!build_options.enable_async) struct {
         // Get or create async connection
         const conn = try self.pool.getConnection(url_components.scheme, url_components.host, url_components.port);
         defer self.pool.releaseConnection(conn);
-        
+
         // Send request and receive response asynchronously
-        var response = try self.sendOnConnection(io, conn, request, url_components);
+        var response = try self.sendOnConnection(event_loop, conn, request, url_components);
         
         // Handle redirects
         if (response.isRedirect()) {
@@ -192,7 +197,7 @@ pub const AsyncClient = if (!build_options.enable_async) struct {
                     }
                 }
                 
-                return self.sendWithRedirects(io, redirect_request, redirect_count + 1);
+                return self.sendWithRedirects(event_loop, redirect_request, redirect_count + 1);
             }
         }
         
@@ -200,21 +205,21 @@ pub const AsyncClient = if (!build_options.enable_async) struct {
     }
     
     /// Send request on async connection
-    fn sendOnConnection(self: *Self, io: *zsync.Io, conn: *AsyncConnection, request: Request, url_components: @import("request.zig").UrlComponents) !Response {
+    fn sendOnConnection(self: *Self, event_loop: *EventLoop, conn: *AsyncConnection, request: Request, url_components: @import("request.zig").UrlComponents) !Response {
         // Ensure connection is established
         if (!conn.isConnected()) {
             try conn.connect(self.allocator, url_components.scheme, url_components.host, url_components.port, self.options);
         }
-        
+
         // Write request asynchronously
-        try self.writeRequestToConnection(io, conn, request, url_components);
-        
+        try self.writeRequestToConnection(event_loop, conn, request, url_components);
+
         // Read response asynchronously
-        return self.readResponse(io, conn);
+        return self.readResponse(event_loop, conn);
     }
-    
+
     /// Write HTTP request to async connection
-    fn writeRequestToConnection(self: *Self, io: *zsync.Io, conn: *AsyncConnection, request: Request, url_components: @import("request.zig").UrlComponents) !void {
+    fn writeRequestToConnection(self: *Self, event_loop: *EventLoop, conn: *AsyncConnection, request: Request, url_components: @import("request.zig").UrlComponents) !void {
         
         var request_buffer: std.ArrayList(u8) = .{};
         defer request_buffer.deinit(self.allocator);
@@ -260,32 +265,32 @@ pub const AsyncClient = if (!build_options.enable_async) struct {
         // End headers
         try request_buffer.appendSlice(self.allocator, "\r\n");
         
-        // Write headers asynchronously  
-        try conn.writeAll(io, request_buffer.items);
-        
+        // Write headers asynchronously
+        try conn.writeAll(event_loop, request_buffer.items);
+
         // Write body if present
         if (!request.body.isEmpty()) {
             var body_reader = BodyReader.init(self.allocator, request.body);
             defer body_reader.deinit();
-            
+
             var body_buffer: [8192]u8 = undefined;
             while (true) {
                 const bytes_read = try body_reader.read(&body_buffer);
                 if (bytes_read == 0) break;
-                
-                try conn.writeAll(io, body_buffer[0..bytes_read]);
+
+                try conn.writeAll(event_loop, body_buffer[0..bytes_read]);
             }
         }
-        
+
         // Flush the connection
-        try conn.flush(io);
+        try conn.flush(event_loop);
     }
-    
+
     /// Read HTTP response asynchronously
-    fn readResponse(self: *Self, io: *zsync.Io, conn: *AsyncConnection) !Response {
+    fn readResponse(self: *Self, event_loop: *EventLoop, conn: *AsyncConnection) !Response {
         // Read entire response for simplicity (could be optimized for streaming)
         var response_buffer: [8192]u8 = undefined;
-        const bytes_read = try conn.readAll(io, &response_buffer);
+        const bytes_read = try conn.readAll(event_loop, &response_buffer);
         if (bytes_read == 0) return error.EndOfStream;
         
         const response_data = response_buffer[0..bytes_read];
@@ -457,7 +462,7 @@ const AsyncConnectionPool = struct {
     }
 };
 
-/// Async connection using zsync
+/// Async connection using homebrew async runtime
 const AsyncConnection = struct {
     stream: ?net.Stream,
     is_tls: bool,
@@ -511,67 +516,67 @@ const AsyncConnection = struct {
     fn initTls(self: *AsyncConnection, host: []const u8, tls_options: AsyncClientOptions.TlsOptions) !void {
         _ = host;
         _ = tls_options;
-        // TODO: Implement async TLS using zsync
+        // TODO: Implement async TLS using homebrew runtime
         // For now, this is a placeholder
         self.is_tls = true;
     }
-    
+
     /// Write data asynchronously
-    fn writeAll(self: *AsyncConnection, io: *zsync.Io, data: []const u8) !void {
-        // For now use synchronous write - can be improved with actual zsync integration
-        _ = io;
+    fn writeAll(self: *AsyncConnection, event_loop: *EventLoop, data: []const u8) !void {
+        // For now use synchronous write - can be improved with event loop integration
+        _ = event_loop;
         if (self.stream) |stream| {
             try stream.writeAll(data);
         } else {
             return error.NotConnected;
         }
     }
-    
+
     /// Read data asynchronously
-    fn readAll(self: *AsyncConnection, io: *zsync.Io, buffer: []u8) !usize {
-        // For now use synchronous read - can be improved with actual zsync integration
-        _ = io;
+    fn readAll(self: *AsyncConnection, event_loop: *EventLoop, buffer: []u8) !usize {
+        // For now use synchronous read - can be improved with event loop integration
+        _ = event_loop;
         if (self.stream) |stream| {
             return try stream.read(buffer);
         } else {
             return error.NotConnected;
         }
     }
-    
+
     /// Flush connection asynchronously
-    fn flush(self: *AsyncConnection, io: *zsync.Io) !void {
-        // For now use synchronous flush - can be improved with actual zsync integration  
+    fn flush(self: *AsyncConnection, event_loop: *EventLoop) !void {
+        // For now use synchronous flush - can be improved with event loop integration
         _ = self;
-        _ = io;
+        _ = event_loop;
         // No-op for TCP streams
     }
 };
 
-/// Convenience async functions using zsync
-pub fn getAsync(allocator: std.mem.Allocator, io: *zsync.Io, url: []const u8) !Response {
+/// Convenience async functions using homebrew runtime
+pub fn getAsync(allocator: std.mem.Allocator, event_loop: *EventLoop, url: []const u8) !Response {
     if (!build_options.enable_async) return Error.AsyncNotEnabled;
-    
+
     var client = AsyncClient.init(allocator, AsyncClientOptions{});
     defer client.deinit();
-    
+
     var request = Request.init(allocator, .GET, url);
     defer request.deinit();
-    
-    return client.send(io, request);
+
+    return client.send(event_loop, request);
 }
 
 /// Convenience async POST function
-pub fn postAsync(allocator: std.mem.Allocator, io: *zsync.Io, url: []const u8, body: Body) !Response {
+pub fn postAsync(allocator: std.mem.Allocator, event_loop: *EventLoop, url: []const u8, body: Body) !Response {
     if (!build_options.enable_async) return Error.AsyncNotEnabled;
-    
+
     var client = AsyncClient.init(allocator, AsyncClientOptions{});
     defer client.deinit();
-    
+
     var request = Request.init(allocator, .POST, url);
     defer request.deinit();
     request.setBody(body);
-    
-    return client.send(io, request);
+
+    return client.send(event_loop, request);
 }
 
 test "async client stub" {
@@ -580,21 +585,21 @@ test "async client stub" {
         var gpa = std.heap.GeneralPurposeAllocator(.{}){};
         defer _ = gpa.deinit();
         const allocator = gpa.allocator();
-        
+
         var client = AsyncClient.init(allocator, AsyncClientOptions{});
         defer client.deinit();
-        
-        // This would require a zsync.Io instance to test properly
+
+        // This would require an EventLoop instance to test properly
         // try std.testing.expect(@TypeOf(client) == AsyncClient);
     } else {
         // Test stub functionality
         var gpa = std.heap.GeneralPurposeAllocator(.{}){};
         defer _ = gpa.deinit();
         const allocator = gpa.allocator();
-        
+
         var client = AsyncClient.init(allocator, AsyncClientOptions{});
         defer client.deinit();
-        
+
         try std.testing.expect(@TypeOf(client) == AsyncClient);
     }
 }

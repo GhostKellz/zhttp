@@ -60,10 +60,16 @@ pub fn build(b: *std.Build) void {
     const build_options_module = build_options.createModule();
     mod.addImport("build_options", build_options_module);
     
-    // Add zsync dependency if async is enabled
-    if (enable_async) {
-        const zsync = b.dependency("zsync", .{});
-        mod.addImport("zsync", zsync.module("zsync"));
+    // Async runtime is now built-in (homebrew)
+    // No external dependencies needed for async support
+
+    // Add zquic dependency if HTTP/3 is enabled
+    if (engine_h3 and std.mem.eql(u8, quic_backend, "zquic")) {
+        const zquic = b.dependency("zquic", .{
+            .target = target,
+            .optimize = optimize,
+        });
+        mod.addImport("zquic", zquic.module("zquic"));
     }
 
     // Here we define an executable. An executable needs to have a root module
@@ -163,6 +169,100 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
 
+    // Advanced test suites for production readiness
+    // Memory leak detection tests
+    const memory_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/unit/memory_leak_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zhttp", .module = mod },
+                .{ .name = "build_options", .module = build_options_module },
+            },
+        }),
+    });
+    const run_memory_tests = b.addRunArtifact(memory_tests);
+    const memory_test_step = b.step("test-memory", "Run memory leak detection tests");
+    memory_test_step.dependOn(&run_memory_tests.step);
+
+    // Fuzz tests
+    const fuzz_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/fuzz/fuzz_parsers.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zhttp", .module = mod },
+                .{ .name = "build_options", .module = build_options_module },
+            },
+        }),
+    });
+    const run_fuzz_tests = b.addRunArtifact(fuzz_tests);
+    const fuzz_test_step = b.step("test-fuzz", "Run fuzz tests");
+    fuzz_test_step.dependOn(&run_fuzz_tests.step);
+
+    // Stress tests
+    const stress_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/stress/stress_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zhttp", .module = mod },
+                .{ .name = "build_options", .module = build_options_module },
+            },
+        }),
+    });
+    const run_stress_tests = b.addRunArtifact(stress_tests);
+    const stress_test_step = b.step("test-stress", "Run stress tests");
+    stress_test_step.dependOn(&run_stress_tests.step);
+
+    // Security tests
+    const security_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/security/security_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zhttp", .module = mod },
+                .{ .name = "build_options", .module = build_options_module },
+            },
+        }),
+    });
+    const run_security_tests = b.addRunArtifact(security_tests);
+    const security_test_step = b.step("test-security", "Run security hardening tests");
+    security_test_step.dependOn(&run_security_tests.step);
+
+    // Comprehensive test suite
+    const test_all_step = b.step("test-all", "Run all test suites (unit + fuzz + stress + security)");
+    test_all_step.dependOn(test_step);
+    test_all_step.dependOn(&run_memory_tests.step);
+    test_all_step.dependOn(&run_fuzz_tests.step);
+    test_all_step.dependOn(&run_stress_tests.step);
+    test_all_step.dependOn(&run_security_tests.step);
+
+    // Benchmark executable
+    const bench_exe = b.addExecutable(.{
+        .name = "benchmark",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/benchmark.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zhttp", .module = mod },
+                .{ .name = "build_options", .module = build_options_module },
+            },
+        }),
+    });
+    // Don't install benchmark by default - only when bench step is run
+    const install_bench = b.addInstallArtifact(bench_exe, .{});
+
+    const run_bench = b.addRunArtifact(bench_exe);
+    const bench_step = b.step("bench", "Run performance benchmarks");
+    bench_step.dependOn(&install_bench.step);
+    bench_step.dependOn(&run_bench.step);
+
     // Example executables
     const examples = [_]struct { name: []const u8, path: []const u8, desc: []const u8 }{
         .{ .name = "get", .path = "examples/get.zig", .desc = "Simple GET request example" },
@@ -186,14 +286,10 @@ pub fn build(b: *std.Build) void {
                 .root_source_file = b.path(example.path),
                 .target = target,
                 .optimize = optimize,
-                .imports = if (enable_async) &.{
-                    .{ .name = "zhttp", .module = mod },
-                    .{ .name = "build_options", .module = build_options_module },
-                    .{ .name = "zsync", .module = b.dependency("zsync", .{}).module("zsync") },
-                } else &.{
-                    .{ .name = "zhttp", .module = mod },
-                    .{ .name = "build_options", .module = build_options_module },
-                },
+                .imports = &.{
+                .{ .name = "zhttp", .module = mod },
+                .{ .name = "build_options", .module = build_options_module },
+            },
             }),
         });
 

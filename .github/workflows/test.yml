@@ -1,0 +1,142 @@
+name: Test Suite
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x86_64
+            os: ubuntu-latest
+            target: x86_64-linux
+          - name: macOS x86_64
+            os: macos-latest
+            target: x86_64-macos
+          - name: Windows x86_64
+            os: windows-latest
+            target: x86_64-windows
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.16.0-dev
+
+      - name: Run unit tests
+        run: zig build test
+
+      - name: Run memory leak tests
+        run: zig build test-memory
+
+      - name: Run fuzz tests
+        run: zig build test-fuzz
+
+      - name: Run stress tests
+        run: zig build test-stress
+
+      - name: Run security tests
+        run: zig build test-security
+
+      - name: Build HTTP/1.1 only
+        run: zig build -Dengine_h1=true -Dengine_h2=false -Dengine_h3=false
+
+      - name: Build HTTP/1.1 + HTTP/2
+        run: zig build -Dengine_h1=true -Dengine_h2=true -Dengine_h3=false
+
+      - name: Build all (HTTP/1.1 + HTTP/2 + HTTP/3)
+        run: zig build -Dengine_h1=true -Dengine_h2=true -Dengine_h3=true -Dquic_backend=zquic
+
+  benchmark:
+    name: Performance Benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.16.0-dev
+
+      - name: Build benchmarks (ReleaseFast)
+        run: zig build bench -Doptimize=ReleaseFast
+
+      - name: Run benchmarks
+        run: ./zig-out/bin/benchmark
+
+  coverage:
+    name: Code Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.16.0-dev
+
+      - name: Run tests with coverage
+        run: zig build test-all
+
+  security:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.16.0-dev
+
+      - name: Run security tests
+        run: zig build test-security
+
+      - name: Check for known vulnerabilities
+        run: |
+          echo "Checking for common security issues..."
+          # Add security scanning tools here
+
+  build-matrix:
+    name: Build Matrix (${{ matrix.optimize }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        optimize: [Debug, ReleaseSafe, ReleaseFast, ReleaseSmall]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.16.0-dev
+
+      - name: Build with ${{ matrix.optimize }}
+        run: zig build -Doptimize=${{ matrix.optimize }}
+
+      - name: Test with ${{ matrix.optimize }}
+        run: zig build test -Doptimize=${{ matrix.optimize }}
+
+  examples:
+    name: Build Examples
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.16.0-dev
+
+      - name: Build all examples
+        run: zig build
+
+      - name: Verify executables
+        run: |
+          test -f zig-out/bin/get
+          test -f zig-out/bin/post_json
+          test -f zig-out/bin/download
+          test -f zig-out/bin/async_get
