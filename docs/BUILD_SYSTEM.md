@@ -39,7 +39,7 @@ zig build -Dengine_h1=true -Dengine_h2=true -Dengine_h3=true -Dquic_backend=zqui
 
 ## Use Cases
 
-### Minimal HTTP/1.1 Client
+### Minimal HTTP/1.1 Client & Server
 
 **Goal**: Smallest binary size, no external dependencies
 
@@ -47,7 +47,7 @@ zig build -Dengine_h1=true -Dengine_h2=true -Dengine_h3=true -Dquic_backend=zqui
 zig build -Dengine_h1=true -Dengine_h2=false -Dengine_h3=false
 ```
 
-**Features available**:
+**Client Features**:
 - GET, POST, PUT, PATCH, DELETE, HEAD
 - Connection pooling
 - Keep-alive
@@ -58,9 +58,18 @@ zig build -Dengine_h1=true -Dengine_h2=false -Dengine_h3=false
 - WebSocket upgrade
 - Server-Sent Events
 
+**Server Features**:
+- Request parsing
+- Response generation
+- Keep-alive support
+- Chunked transfer encoding
+- Header manipulation
+- Route handling
+- Body parsing (JSON, text, binary)
+
 **Binary size**: ~150KB (Release, stripped)
 
-### Modern Web Client (HTTP/1.1 + HTTP/2)
+### Modern Web Client & Server (HTTP/1.1 + HTTP/2)
 
 **Goal**: Support modern web APIs with automatic protocol negotiation
 
@@ -68,18 +77,26 @@ zig build -Dengine_h1=true -Dengine_h2=false -Dengine_h3=false
 zig build -Dengine_h1=true -Dengine_h2=true
 ```
 
-**Features available**:
-- All HTTP/1.1 features
+**Client Features**:
+- All HTTP/1.1 client features
 - HTTP/2 multiplexing
 - HPACK header compression
-- Server push
+- Server push support
 - Priority streams
+
+**Server Features**:
+- All HTTP/1.1 server features
+- HTTP/2 frame handling
+- Stream multiplexing
+- HPACK encoding/decoding
+- Flow control
+- Priority handling
 
 **Binary size**: ~220KB (Release, stripped)
 
 **Dependencies**: None (homebrew HPACK implementation)
 
-### Full Stack (HTTP/1.1 + HTTP/2 + HTTP/3)
+### Full Stack Client & Server (HTTP/1.1 + HTTP/2 + HTTP/3)
 
 **Goal**: Maximum performance with 0-RTT and QUIC
 
@@ -87,16 +104,25 @@ zig build -Dengine_h1=true -Dengine_h2=true
 zig build -Dengine_h1=true -Dengine_h2=true -Dengine_h3=true -Dquic_backend=zquic
 ```
 
-**Features available**:
-- All HTTP/1.1 and HTTP/2 features
+**Client Features**:
+- All HTTP/1.1 and HTTP/2 client features
 - HTTP/3 over QUIC
 - QPACK header compression
 - 0-RTT resumption
 - UDP-based transport
 
+**Server Features**:
+- All HTTP/1.1 and HTTP/2 server features
+- HTTP/3 QUIC listener
+- QPACK encoding/decoding
+- 0-RTT support
+- Stream multiplexing over QUIC
+
 **Binary size**: ~450KB (Release, stripped)
 
 **Dependencies**: zquic
+
+**Use Case**: Modern reverse proxy, API gateway, or high-performance web server
 
 ## Configuration in build.zig
 

@@ -7,6 +7,13 @@ const build_options = @import("build_options");
 pub const Client = @import("client.zig").Client;
 pub const ClientOptions = @import("client.zig").ClientOptions;
 
+// Server API
+pub const Server = @import("server.zig").Server;
+pub const ServerOptions = @import("server.zig").ServerOptions;
+pub const ServerRequest = @import("server.zig").ServerRequest;
+pub const ServerResponse = @import("server.zig").ServerResponse;
+pub const Handler = @import("server.zig").Handler;
+
 // Async API (available when async is enabled)
 pub const AsyncClient = @import("async_client.zig").AsyncClient;
 pub const AsyncClientOptions = @import("async_client.zig").AsyncClientOptions;
@@ -48,6 +55,12 @@ pub const Http2 = struct {
     pub const HPACK = @import("http2/hpack.zig");
     pub const Frame = @import("http2/frame.zig");
     pub const Stream = @import("http2/stream.zig");
+    pub const Client = if (build_options.engine_h2) @import("http2_client.zig").Http2Client else struct {};
+    pub const Server = if (build_options.engine_h2) @import("http2_server.zig").Http2Server else struct {};
+    pub const ServerRequest = if (build_options.engine_h2) @import("http2_server.zig").Http2ServerRequest else struct {};
+    pub const ServerResponse = if (build_options.engine_h2) @import("http2_server.zig").Http2ServerResponse else struct {};
+    pub const ClientOptions = if (build_options.engine_h2) @import("http2_client.zig").Http2ClientOptions else struct {};
+    pub const ServerOptions = if (build_options.engine_h2) @import("http2_server.zig").Http2ServerOptions else struct {};
 };
 
 // HTTP/3 support
@@ -55,6 +68,12 @@ pub const Http3 = struct {
     pub const QPACK = @import("http3/qpack.zig");
     pub const Frame = @import("http3/frame.zig");
     pub const ZeroRTT = @import("http3/zero_rtt.zig");
+    pub const Client = if (build_options.engine_h3) @import("http3_client.zig").Http3Client else struct {};
+    pub const Server = if (build_options.engine_h3) @import("http3_server.zig").Http3Server else struct {};
+    pub const ServerRequest = if (build_options.engine_h3) @import("http3_server.zig").Http3ServerRequest else struct {};
+    pub const ServerResponse = if (build_options.engine_h3) @import("http3_server.zig").Http3ServerResponse else struct {};
+    pub const ClientOptions = if (build_options.engine_h3) @import("http3_client.zig").Http3ClientOptions else struct {};
+    pub const ServerOptions = if (build_options.engine_h3) @import("http3_server.zig").Http3ServerOptions else struct {};
 };
 
 // Server-Sent Events support

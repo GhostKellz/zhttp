@@ -64,12 +64,14 @@ pub fn build(b: *std.Build) void {
     // No external dependencies needed for async support
 
     // Add zquic dependency if HTTP/3 is enabled
-    if (engine_h3 and std.mem.eql(u8, quic_backend, "zquic")) {
-        const zquic = b.dependency("zquic", .{
+    if (engine_h3 and !std.mem.eql(u8, quic_backend, "none")) {
+        const zquic_dep = b.dependency("zquic", .{
             .target = target,
             .optimize = optimize,
+            .enable_http3 = true,
+            .enable_async_zsync = enable_async,
         });
-        mod.addImport("zquic", zquic.module("zquic"));
+        mod.addImport("zquic", zquic_dep.module("zquic"));
     }
 
     // Here we define an executable. An executable needs to have a root module
@@ -277,6 +279,9 @@ pub fn build(b: *std.Build) void {
         .{ .name = "test_https_with_verification", .path = "examples/test_https_with_verification.zig", .desc = "HTTPS test with certificate verification enabled" },
         .{ .name = "debug_tls_connection_only", .path = "examples/debug_tls_connection_only.zig", .desc = "Test HTTP client TLS setup in isolation" },
         .{ .name = "async_get", .path = "examples/async_get.zig", .desc = "Async GET request using zsync runtime" },
+        .{ .name = "http1_server", .path = "examples/http1_server.zig", .desc = "HTTP/1.1 server example" },
+        .{ .name = "http2_server", .path = "examples/http2_server.zig", .desc = "HTTP/2 server example" },
+        .{ .name = "http3_server", .path = "examples/http3_server.zig", .desc = "HTTP/3 over QUIC server example" },
     };
 
     for (examples) |example| {

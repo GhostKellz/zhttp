@@ -17,21 +17,30 @@ This is an experimental library under active development. It is
 intended for research, learning, and personal projects. The API is subject
 to change!
 
-A modern, fast, and feature-rich HTTP client library for Zig with TLS support, connection pooling, and an intuitive API.
+A modern, fast, and feature-rich HTTP client **and server** library for Zig supporting HTTP/1.1, HTTP/2, and HTTP/3 with a modular build system.
 
 ## ✨ Features
 
-- 🌐 **HTTP/1.1 Support** - Full HTTP/1.1 protocol implementation
+### Client & Server Support
+- 🌐 **HTTP/1.1** - Full client and server implementation
+- 🚀 **HTTP/2** - Multiplexing, HPACK compression, server push (optional)
+- ⚡ **HTTP/3** - QUIC transport, QPACK, 0-RTT (optional with zquic)
 - 🔒 **TLS/SSL** - Built-in TLS support with certificate verification
 - 🏊 **Connection Pooling** - Efficient connection reuse and management
+
+### Developer Experience
 - 📦 **Request/Response Builders** - Fluent API for building requests
 - 🔧 **Header Management** - Comprehensive HTTP header utilities
 - 📝 **Body Handling** - Support for text, JSON, binary, and multipart data
-- ⚡ **Async Ready** - Built with Zig's async model in mind
+- ⚡ **Async Runtime** - Native async support with homebrew runtime
 - 🛡️ **Memory Safe** - Proper memory management with allocator patterns
 - 🔄 **Retry Logic** - Configurable retry mechanisms with exponential backoff
 - 📊 **Progress Tracking** - Download progress monitoring
-- 🎯 **Zero Dependencies** - Uses only Zig's standard library
+
+### Modular Build System
+- 🎯 **Zero Dependencies** - HTTP/1.1 and HTTP/2 use only Zig std lib
+- 🔧 **Compile-Time Features** - Build only what you need
+- 📦 **Small Binaries** - ~150KB for HTTP/1.1 only, ~220KB with HTTP/2
 
 ## 🚀 Quick Start
 
@@ -43,7 +52,7 @@ Add zhttp to your project using Zig's package manager:
 zig fetch --save https://github.com/ghostkellz/zhttp
 ```
 
-### Basic Usage
+### Client Usage
 
 ```zig
 const std = @import("std");
@@ -63,6 +72,38 @@ pub fn main() !void {
         defer allocator.free(body);
         std.debug.print("Response: {s}\n", .{body});
     }
+}
+```
+
+### Server Usage
+
+```zig
+const std = @import("std");
+const zhttp = @import("zhttp");
+
+fn handler(req: *zhttp.ServerRequest, res: *zhttp.ServerResponse) !void {
+    if (std.mem.eql(u8, req.path, "/")) {
+        try res.sendText("Hello from zhttp server!");
+    } else if (std.mem.eql(u8, req.path, "/json")) {
+        try res.sendJson("{\"message\": \"Hello, World!\"}");
+    } else {
+        res.setStatus(404);
+        try res.sendText("Not Found");
+    }
+}
+
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var server = zhttp.Server.init(allocator, .{
+        .host = "127.0.0.1",
+        .port = 8080,
+    }, handler);
+    defer server.deinit();
+
+    try server.listen(); // Starts listening on port 8080
 }
 ```
 

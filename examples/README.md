@@ -4,7 +4,7 @@ This directory contains examples demonstrating various features of zhttp.
 
 ## Running Examples
 
-### Basic Examples (HTTP/1.1)
+### Client Examples (HTTP/1.1)
 
 Build with HTTP/1.1 support (default):
 
@@ -12,11 +12,45 @@ Build with HTTP/1.1 support (default):
 zig build
 ```
 
-Available executables:
+Available client executables:
 - `./zig-out/bin/get` - Simple GET request
 - `./zig-out/bin/post_json` - POST JSON data
 - `./zig-out/bin/download` - Download a file
 - `./zig-out/bin/async_get` - Async GET request
+
+### Server Examples
+
+#### HTTP/1.1 Server
+
+```bash
+zig build
+./zig-out/bin/http1_server
+```
+
+Then visit http://localhost:8080 in your browser.
+
+#### HTTP/2 Server
+
+```bash
+zig build -Dengine_h2=true
+./zig-out/bin/http2_server
+```
+
+Server runs on port 8443 (requires HTTP/2 client for testing).
+
+#### HTTP/3 Server
+
+```bash
+zig build -Dengine_h3=true -Dquic_backend=zquic
+./zig-out/bin/http3_server
+```
+
+**Note**: Requires TLS certificates (`cert.pem` and `key.pem` in current directory).
+
+Generate self-signed certs for testing:
+```bash
+openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes
+```
 
 ### Advanced Examples
 
@@ -81,19 +115,34 @@ Demonstrates:
 
 ## Example Files
 
+### Client Examples
+
 | File | Description | Build Flags |
 |------|-------------|-------------|
 | `get.zig` | Simple HTTP GET request | Default |
 | `post_json.zig` | POST JSON data | Default |
 | `download.zig` | Download file to disk | Default |
 | `async_get.zig` | Async HTTP GET with event loop | Default |
+| `test_https.zig` | HTTPS with TLS verification | Default |
+| `test_https_no_verify.zig` | HTTPS without verification | Default |
+
+### Server Examples
+
+| File | Description | Build Flags |
+|------|-------------|-------------|
+| `http1_server.zig` | HTTP/1.1 server with routing | Default |
+| `http2_server.zig` | HTTP/2 server with multiplexing | `-Dengine_h2=true` |
+| `http3_server.zig` | HTTP/3 server over QUIC | `-Dengine_h3=true -Dquic_backend=zquic` |
+
+### Advanced Protocol Examples
+
+| File | Description | Build Flags |
+|------|-------------|-------------|
 | `connection_pool_example.zig` | Connection pooling demo | Default |
 | `chunked_encoding_example.zig` | Chunked transfer encoding | Default |
 | `websocket_example.zig` | WebSocket protocol | Default |
 | `sse_example.zig` | Server-Sent Events | Default |
 | `http3_example.zig` | HTTP/3 QPACK and framing | `-Dengine_h3=true` |
-| `test_https.zig` | HTTPS with TLS verification | Default |
-| `test_https_no_verify.zig` | HTTPS without verification | Default |
 
 ## Code Snippets
 
