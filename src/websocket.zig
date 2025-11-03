@@ -176,7 +176,7 @@ pub const Frame = struct {
         var masking_key: ?[4]u8 = null;
 
         if (masked) {
-            var prng = std.rand.DefaultPrng.init(@intCast(std.time.timestamp()));
+            var prng = std.Random.DefaultPrng.init(@intCast(std.time.timestamp()));
             const random = prng.random();
             var key: [4]u8 = undefined;
             random.bytes(&key);
@@ -201,7 +201,7 @@ pub const Frame = struct {
         var masking_key: ?[4]u8 = null;
 
         if (masked) {
-            var prng = std.rand.DefaultPrng.init(@intCast(std.time.timestamp()));
+            var prng = std.Random.DefaultPrng.init(@intCast(std.time.timestamp()));
             const random = prng.random();
             var key: [4]u8 = undefined;
             random.bytes(&key);
@@ -237,7 +237,7 @@ pub const Frame = struct {
 
         var masking_key: ?[4]u8 = null;
         if (masked) {
-            var prng = std.rand.DefaultPrng.init(@intCast(std.time.timestamp()));
+            var prng = std.Random.DefaultPrng.init(@intCast(std.time.timestamp()));
             const random = prng.random();
             var key: [4]u8 = undefined;
             random.bytes(&key);
@@ -262,7 +262,7 @@ pub const Frame = struct {
 
         var masking_key: ?[4]u8 = null;
         if (masked) {
-            var prng = std.rand.DefaultPrng.init(@intCast(std.time.timestamp()));
+            var prng = std.Random.DefaultPrng.init(@intCast(std.time.timestamp()));
             const random = prng.random();
             var key: [4]u8 = undefined;
             random.bytes(&key);
@@ -287,7 +287,7 @@ pub const Frame = struct {
 
         var masking_key: ?[4]u8 = null;
         if (masked) {
-            var prng = std.rand.DefaultPrng.init(@intCast(std.time.timestamp()));
+            var prng = std.Random.DefaultPrng.init(@intCast(std.time.timestamp()));
             const random = prng.random();
             var key: [4]u8 = undefined;
             random.bytes(&key);
@@ -345,7 +345,7 @@ pub const Upgrade = struct {
 
     /// Generate random WebSocket key
     pub fn generateKey(allocator: std.mem.Allocator) ![]u8 {
-        var prng = std.rand.DefaultPrng.init(@intCast(std.time.timestamp()));
+        var prng = std.Random.DefaultPrng.init(@intCast(std.time.timestamp()));
         const random = prng.random();
 
         var key_bytes: [16]u8 = undefined;

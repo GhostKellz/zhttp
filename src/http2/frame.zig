@@ -346,13 +346,14 @@ test "frame header encode/decode" {
 
     const header = FrameHeader.init(.data, FrameFlags.END_STREAM, 1, 100);
 
-    var buffer = std.ArrayList(u8).init(allocator);
-    defer buffer.deinit();
+    var aw: std.Io.Writer.Allocating = .init(allocator);
+    defer aw.deinit();
 
-    try header.encode(buffer.writer());
+    try header.encode(&aw.writer);
 
-    var fbs = std.io.fixedBufferStream(buffer.items);
-    const decoded = try FrameHeader.decode(fbs.reader());
+    const buffer = aw.writer.buffered();
+    var reader = std.Io.Reader.fixed(buffer);
+    const decoded = try FrameHeader.decode(&reader);
 
     try std.testing.expectEqual(header.length, decoded.length);
     try std.testing.expectEqual(header.type, decoded.type);
@@ -370,10 +371,10 @@ test "settings frame" {
 
     const frame = SettingsFrame.init(&settings, false);
 
-    var buffer = std.ArrayList(u8).init(allocator);
-    defer buffer.deinit();
+    var aw: std.Io.Writer.Allocating = .init(allocator);
+    defer aw.deinit();
 
-    try frame.encode(buffer.writer());
+    try frame.encode(&aw.writer);
 
-    try std.testing.expect(buffer.items.len == FrameHeader.SIZE + 12);
+    try std.testing.expect(aw.writer.buffered().len == FrameHeader.SIZE + 12);
 }

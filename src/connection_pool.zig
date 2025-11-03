@@ -74,7 +74,7 @@ pub const ConnectionPool = struct {
     pub fn init(allocator: std.mem.Allocator, config: PoolConfig) ConnectionPool {
         return .{
             .allocator = allocator,
-            .connections = std.ArrayList(*PooledConnection).init(allocator),
+            .connections = .{},
             .config = config,
             .mutex = .{},
         };
@@ -88,7 +88,7 @@ pub const ConnectionPool = struct {
             conn.deinit(self.allocator);
             self.allocator.destroy(conn);
         }
-        self.connections.deinit();
+        self.connections.deinit(self.allocator);
     }
 
     /// Get a connection from the pool or create a new one
@@ -152,7 +152,7 @@ pub const ConnectionPool = struct {
         conn.* = try PooledConnection.init(self.allocator, stream, host, port, is_tls);
         conn.markUsed();
 
-        try self.connections.append(conn);
+        try self.connections.append(self.allocator, conn);
         return conn;
     }
 

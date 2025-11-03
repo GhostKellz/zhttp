@@ -129,11 +129,11 @@ pub const RetryStrategy = struct {
 
 /// Timed reader wrapper
 pub const TimedReader = struct {
-    reader: std.io.AnyReader,
+    reader: *std.Io.Reader,
     timeout_ms: ?u64,
     start_time: i64,
 
-    pub fn init(reader: std.io.AnyReader, timeout_ms: ?u64) TimedReader {
+    pub fn init(reader: *std.Io.Reader, timeout_ms: ?u64) TimedReader {
         return .{
             .reader = reader,
             .timeout_ms = timeout_ms,
@@ -149,7 +149,7 @@ pub const TimedReader = struct {
             }
         }
 
-        return try self.reader.read(buffer);
+        return try self.reader.readSliceShort(buffer);
     }
 
     pub fn readAll(self: *TimedReader, buffer: []u8) !usize {
@@ -170,17 +170,17 @@ pub const TimedReader = struct {
             }
         }
 
-        return try self.reader.readByte();
+        return try self.reader.takeByte();
     }
 };
 
 /// Timed writer wrapper
 pub const TimedWriter = struct {
-    writer: std.io.AnyWriter,
+    writer: *std.Io.Writer,
     timeout_ms: ?u64,
     start_time: i64,
 
-    pub fn init(writer: std.io.AnyWriter, timeout_ms: ?u64) TimedWriter {
+    pub fn init(writer: *std.Io.Writer, timeout_ms: ?u64) TimedWriter {
         return .{
             .writer = writer,
             .timeout_ms = timeout_ms,
@@ -196,14 +196,19 @@ pub const TimedWriter = struct {
             }
         }
 
-        return try self.writer.write(bytes);
+        var data: [1][]const u8 = .{bytes};
+        return try self.writer.writeVec(&data);
     }
 
     pub fn writeAll(self: *TimedWriter, bytes: []const u8) !void {
-        var index: usize = 0;
-        while (index < bytes.len) {
-            index += try self.write(bytes[index..]);
+        if (self.timeout_ms) |timeout| {
+            const elapsed = @as(u64, @intCast(std.time.milliTimestamp() - self.start_time));
+            if (elapsed > timeout) {
+                return TimeoutError.WriteTimeout;
+            }
         }
+
+        try self.writer.writeAll(bytes);
     }
 };
 

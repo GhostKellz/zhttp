@@ -27,76 +27,84 @@ pub const CompressionAlgorithm = enum {
 
 /// Decompress data using gzip/deflate
 pub fn decompressGzip(allocator: std.mem.Allocator, compressed: []const u8) ![]u8 {
-    var result = std.ArrayList(u8).init(allocator);
-    errdefer result.deinit();
+    var result: std.ArrayList(u8) = .{};
+    errdefer result.deinit(allocator);
 
-    // Create a fixed buffer stream from compressed data
-    var fbs = std.io.fixedBufferStream(compressed);
+    // Create a fixed reader from compressed data
+    var reader = std.Io.Reader.fixed(compressed);
 
-    // Decompress using zlib (which handles both gzip and deflate)
-    var decompressor = try std.compress.gzip.decompressor(fbs.reader());
+    // Decompress using flate with gzip container
+    var window_buffer: [std.compress.flate.max_window_len]u8 = undefined;
+    var decompressor = std.compress.flate.Decompress.init(&reader, .gzip, &window_buffer);
 
     // Read decompressed data
     var buffer: [4096]u8 = undefined;
     while (true) {
-        const bytes_read = try decompressor.read(&buffer);
+        const bytes_read = try decompressor.reader.readSliceShort(&buffer);
         if (bytes_read == 0) break;
-        try result.appendSlice(buffer[0..bytes_read]);
+        try result.appendSlice(allocator, buffer[0..bytes_read]);
     }
 
-    return result.toOwnedSlice();
+    return result.toOwnedSlice(allocator);
 }
 
 /// Compress data using gzip
 pub fn compressGzip(allocator: std.mem.Allocator, data: []const u8) ![]u8 {
-    var result = std.ArrayList(u8).init(allocator);
-    errdefer result.deinit();
+    var aw: std.Io.Writer.Allocating = .init(allocator);
+    defer aw.deinit();
 
-    // Create a compressor that writes to our ArrayList
-    var compressor = try std.compress.gzip.compressor(result.writer(), .{});
+    // Create a compressor that writes to our Allocating writer
+    var compress_buffer: [4096]u8 = undefined;
+    var compressor = std.compress.flate.Compress.init(&aw.writer, &compress_buffer, .{
+        .container = .gzip,
+    });
 
     // Write all data
-    try compressor.write(data);
-    try compressor.finish();
+    try compressor.writer.writeAll(data);
+    try compressor.end();
 
-    return result.toOwnedSlice();
+    return try aw.toOwnedSlice();
 }
 
 /// Decompress data using deflate
 pub fn decompressDeflate(allocator: std.mem.Allocator, compressed: []const u8) ![]u8 {
-    var result = std.ArrayList(u8).init(allocator);
-    errdefer result.deinit();
+    var result: std.ArrayList(u8) = .{};
+    errdefer result.deinit(allocator);
 
-    // Create a fixed buffer stream from compressed data
-    var fbs = std.io.fixedBufferStream(compressed);
+    // Create a fixed reader from compressed data
+    var reader = std.Io.Reader.fixed(compressed);
 
-    // Decompress using deflate
-    var decompressor = try std.compress.zlib.decompressor(fbs.reader());
+    // Decompress using flate with zlib container
+    var window_buffer: [std.compress.flate.max_window_len]u8 = undefined;
+    var decompressor = std.compress.flate.Decompress.init(&reader, .zlib, &window_buffer);
 
     // Read decompressed data
     var buffer: [4096]u8 = undefined;
     while (true) {
-        const bytes_read = try decompressor.read(&buffer);
+        const bytes_read = try decompressor.reader.readSliceShort(&buffer);
         if (bytes_read == 0) break;
-        try result.appendSlice(buffer[0..bytes_read]);
+        try result.appendSlice(allocator, buffer[0..bytes_read]);
     }
 
-    return result.toOwnedSlice();
+    return result.toOwnedSlice(allocator);
 }
 
 /// Compress data using deflate
 pub fn compressDeflate(allocator: std.mem.Allocator, data: []const u8) ![]u8 {
-    var result = std.ArrayList(u8).init(allocator);
-    errdefer result.deinit();
+    var aw: std.Io.Writer.Allocating = .init(allocator);
+    defer aw.deinit();
 
-    // Create a compressor that writes to our ArrayList
-    var compressor = try std.compress.zlib.compressor(result.writer(), .{});
+    // Create a compressor that writes to our Allocating writer
+    var compress_buffer: [4096]u8 = undefined;
+    var compressor = std.compress.flate.Compress.init(&aw.writer, &compress_buffer, .{
+        .container = .zlib,
+    });
 
     // Write all data
-    try compressor.write(data);
-    try compressor.finish();
+    try compressor.writer.writeAll(data);
+    try compressor.end();
 
-    return result.toOwnedSlice();
+    return try aw.toOwnedSlice();
 }
 
 /// Decompress data using brotli (homebrew implementation)

@@ -204,27 +204,28 @@ pub const SettingsFrame = struct {
         try VarInt.encode(writer, self.header.frame_type.toInt());
 
         // Calculate actual length
-        var length_buffer = std.ArrayList(u8).init(std.heap.page_allocator);
-        defer length_buffer.deinit();
+        var aw: std.Io.Writer.Allocating = .init(std.heap.page_allocator);
+        defer aw.deinit();
 
         for (self.settings) |setting| {
-            try VarInt.encode(length_buffer.writer(), setting.parameter.toInt());
-            try VarInt.encode(length_buffer.writer(), setting.value);
+            try VarInt.encode(&aw.writer, setting.parameter.toInt());
+            try VarInt.encode(&aw.writer, setting.value);
         }
 
-        try VarInt.encode(writer, length_buffer.items.len);
-        try writer.writeAll(length_buffer.items);
+        const length_buffer = aw.writer.buffered();
+        try VarInt.encode(writer, length_buffer.len);
+        try writer.writeAll(length_buffer);
     }
 
     pub fn decode(allocator: std.mem.Allocator, header: FrameHeader, reader: anytype) !SettingsFrame {
-        var settings = std.ArrayList(Setting).init(allocator);
+        var settings: std.ArrayList(Setting) = .{};
 
         var bytes_read: u64 = 0;
         while (bytes_read < header.length) {
             const param_id = try VarInt.decode(reader);
             const value = try VarInt.decode(reader);
 
-            try settings.append(.{
+            try settings.append(allocator, .{
                 .parameter = SettingsParameter.fromInt(param_id),
                 .value = value,
             });
@@ -234,7 +235,7 @@ pub const SettingsFrame = struct {
 
         return .{
             .header = header,
-            .settings = try settings.toOwnedSlice(),
+            .settings = try settings.toOwnedSlice(allocator),
         };
     }
 };
@@ -302,23 +303,25 @@ test "varint encoding/decoding" {
 
     // Test 1-byte
     {
-        var buffer = std.ArrayList(u8).init(allocator);
-        defer buffer.deinit();
-        try VarInt.encode(buffer.writer(), 42);
+        var aw: std.Io.Writer.Allocating = .init(allocator);
+        defer aw.deinit();
+        try VarInt.encode(&aw.writer, 42);
 
-        var fbs = std.io.fixedBufferStream(buffer.items);
-        const decoded = try VarInt.decode(fbs.reader());
+        const buffer = aw.writer.buffered();
+        var reader = std.Io.Reader.fixed(buffer);
+        const decoded = try VarInt.decode(&reader);
         try std.testing.expectEqual(@as(u64, 42), decoded);
     }
 
     // Test 2-byte
     {
-        var buffer = std.ArrayList(u8).init(allocator);
-        defer buffer.deinit();
-        try VarInt.encode(buffer.writer(), 1000);
+        var aw: std.Io.Writer.Allocating = .init(allocator);
+        defer aw.deinit();
+        try VarInt.encode(&aw.writer, 1000);
 
-        var fbs = std.io.fixedBufferStream(buffer.items);
-        const decoded = try VarInt.decode(fbs.reader());
+        const buffer = aw.writer.buffered();
+        var reader = std.Io.Reader.fixed(buffer);
+        const decoded = try VarInt.decode(&reader);
         try std.testing.expectEqual(@as(u64, 1000), decoded);
     }
 }
@@ -331,13 +334,14 @@ test "http3 frame header" {
         .length = 100,
     };
 
-    var buffer = std.ArrayList(u8).init(allocator);
-    defer buffer.deinit();
+    var aw: std.Io.Writer.Allocating = .init(allocator);
+    defer aw.deinit();
 
-    try header.encode(buffer.writer());
+    try header.encode(&aw.writer);
 
-    var fbs = std.io.fixedBufferStream(buffer.items);
-    const decoded = try FrameHeader.decode(fbs.reader());
+    const buffer = aw.writer.buffered();
+    var reader = std.Io.Reader.fixed(buffer);
+    const decoded = try FrameHeader.decode(&reader);
 
     try std.testing.expectEqual(header.frame_type, decoded.frame_type);
     try std.testing.expectEqual(header.length, decoded.length);

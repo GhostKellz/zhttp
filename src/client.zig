@@ -11,6 +11,7 @@ const BodyReader = @import("body.zig").BodyReader;
 const Http1 = @import("http1.zig").Http1;
 const ChunkedReaderGen = @import("http1.zig").ChunkedReader;
 const Error = @import("error.zig").Error;
+const compression = @import("compression.zig");
 
 /// HTTP client configuration
 pub const ClientOptions = struct {
@@ -84,7 +85,15 @@ pub const Client = struct {
     }
     
     /// Send HTTP request with redirect support
-    pub fn send(self: *Client, request: Request) !Response {
+    pub fn send(self: *Client, request_param: Request) !Response {
+        // Make a mutable copy to potentially add headers
+        var request = request_param;
+
+        // Add Accept-Encoding header if auto_decompress is enabled and not already set
+        if (self.options.auto_decompress and !request.headers.has(Header.common.ACCEPT_ENCODING)) {
+            try request.headers.append("Accept-Encoding", "gzip, deflate, br");
+        }
+
         return self.sendWithRetries(request, 0);
     }
     
@@ -218,9 +227,15 @@ pub const Client = struct {
         }
         
         // Read the entire body into memory since the stream will be closed
-        const body = try self.readResponseBodyFromConnection(conn, response.headers);
+        var body = try self.readResponseBodyFromConnection(conn, response.headers);
+
+        // Auto-decompress if enabled
+        if (self.options.auto_decompress) {
+            body = try self.decompressBody(body, response.headers);
+        }
+
         response.setBody(body);
-        
+
         return response;
     }
     
@@ -338,7 +353,7 @@ pub const Client = struct {
         const reader = conn.buffered_reader orelse return error.ConnectionNotReady;
         const ChunkedReaderType = ChunkedReaderGen(@TypeOf(reader));
         var chunked_reader = ChunkedReaderType.init(reader);
-        
+
         var body_data: std.ArrayList(u8) = .{};
         defer body_data.deinit(self.allocator);
         
@@ -359,9 +374,35 @@ pub const Client = struct {
                 return Error.BodyTooLarge;
             }
         }
-        
+
         const owned_data = try body_data.toOwnedSlice(self.allocator);
         return Body.fromOwnedString(owned_data);
+    }
+
+    /// Decompress response body based on Content-Encoding header
+    fn decompressBody(self: *Client, body: Body, headers: Header.HeaderMap) !Body {
+        // Get the Content-Encoding header
+        const encoding = headers.get(Header.common.CONTENT_ENCODING) orelse return body;
+
+        // Determine compression algorithm
+        const algorithm = compression.CompressionAlgorithm.fromContentEncoding(encoding);
+        if (algorithm == .none) return body;
+
+        // Extract body bytes
+        const compressed_bytes = switch (body) {
+            .bytes => |bytes| bytes,
+            .owned_bytes => |bytes| bytes,
+            else => return body, // Can't decompress streaming bodies
+        };
+
+        // Decompress
+        const decompressed = try compression.decompress(self.allocator, algorithm, compressed_bytes);
+
+        // Free old body if it was owned
+        body.deinit(self.allocator);
+
+        // Return new decompressed body
+        return Body.fromOwnedString(decompressed);
     }
     
     /// Create body reader based on response headers

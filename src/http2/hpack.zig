@@ -122,7 +122,7 @@ pub const DynamicTable = struct {
     pub fn init(allocator: std.mem.Allocator, max_size: usize) DynamicTable {
         return .{
             .allocator = allocator,
-            .entries = std.ArrayList(Entry).init(allocator),
+            .entries = .{},
             .size = 0,
             .max_size = max_size,
         };
@@ -132,7 +132,7 @@ pub const DynamicTable = struct {
         for (self.entries.items) |*entry| {
             entry.deinit(self.allocator);
         }
-        self.entries.deinit();
+        self.entries.deinit(self.allocator);
     }
 
     pub fn add(self: *DynamicTable, name: []const u8, value: []const u8) !void {
@@ -150,7 +150,7 @@ pub const DynamicTable = struct {
         }
 
         // Add new entry at the beginning
-        try self.entries.insert(0, new_entry);
+        try self.entries.insert(self.allocator, 0, new_entry);
         self.size += entry_size;
     }
 
@@ -259,7 +259,7 @@ pub const Decoder = struct {
 
     /// Decode a header block
     pub fn decodeHeaderBlock(self: *Decoder, data: []const u8) !std.ArrayList(struct { name: []u8, value: []u8 }) {
-        var headers = std.ArrayList(struct { name: []u8, value: []u8 }).init(self.allocator);
+        var headers: std.ArrayList(struct { name: []u8, value: []u8 }) = .{};
         var pos: usize = 0;
 
         while (pos < data.len) {
@@ -269,7 +269,7 @@ pub const Decoder = struct {
                 // Indexed header field
                 const index = try self.decodeInteger(data, &pos, 7);
                 const entry = try self.getTableEntry(index);
-                try headers.append(.{
+                try headers.append(self.allocator, .{
                     .name = try self.allocator.dupe(u8, entry.name),
                     .value = try self.allocator.dupe(u8, entry.value),
                 });
@@ -277,7 +277,7 @@ pub const Decoder = struct {
                 // Literal with incremental indexing
                 pos += 1;
                 const header = try self.decodeLiteralHeader(data, &pos, true);
-                try headers.append(header);
+                try headers.append(self.allocator, header);
             } else if (byte & 0b00100000 != 0) {
                 // Dynamic table size update
                 const new_size = try self.decodeInteger(data, &pos, 5);
@@ -286,7 +286,7 @@ pub const Decoder = struct {
                 // Literal without indexing or never indexed
                 pos += 1;
                 const header = try self.decodeLiteralHeader(data, &pos, false);
-                try headers.append(header);
+                try headers.append(self.allocator, header);
             }
         }
 
@@ -390,9 +390,9 @@ test "hpack encoder basic" {
     var encoder = Encoder.init(allocator, 4096);
     defer encoder.deinit();
 
-    var buffer = std.ArrayList(u8).init(allocator);
-    defer buffer.deinit();
+    var buffer: std.ArrayList(u8) = .{};
+    defer buffer.deinit(allocator);
 
-    try encoder.encodeHeader(buffer.writer(), ":method", "GET");
+    try encoder.encodeHeader(buffer.writer(allocator), ":method", "GET");
     try std.testing.expect(buffer.items.len > 0);
 }

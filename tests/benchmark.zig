@@ -124,8 +124,8 @@ fn benchmarkHPACK(allocator: std.mem.Allocator) !void {
         var decoder = zhttp.Http2.HPACK.Decoder.init(allocator, 4096);
         defer decoder.deinit();
 
-        var buffer = std.ArrayList(u8).init(allocator);
-        defer buffer.deinit();
+        var buffer: std.ArrayList(u8) = .{};
+        defer buffer.deinit(allocator);
 
         var timer = try std.time.Timer.start();
 
@@ -168,16 +168,16 @@ fn benchmarkQPACK(allocator: std.mem.Allocator) !void {
         var decoder = zhttp.Http3.QPACK.Decoder.init(allocator, 4096);
         defer decoder.deinit();
 
-        var headers_array = std.ArrayList(struct { name: []const u8, value: []const u8 }).init(allocator);
-        defer headers_array.deinit();
+        var headers_array: std.ArrayList(struct { name: []const u8, value: []const u8 }) = .{};
+        defer headers_array.deinit(allocator);
 
         var i: usize = 0;
         while (i < count) : (i += 1) {
             try headers_array.append(.{ .name = ":method", .value = "GET" });
         }
 
-        var buffer = std.ArrayList(u8).init(allocator);
-        defer buffer.deinit();
+        var buffer: std.ArrayList(u8) = .{};
+        defer buffer.deinit(allocator);
 
         var timer = try std.time.Timer.start();
         try encoder.encodeHeaders(buffer.writer().any(), headers_array.items);
@@ -217,8 +217,8 @@ fn benchmarkWebSocket(allocator: std.mem.Allocator) !void {
         var frame = try zhttp.WebSocket.Frame.binary(allocator, data, true);
         const create_time = timer.read();
 
-        var buffer = std.ArrayList(u8).init(allocator);
-        defer buffer.deinit();
+        var buffer: std.ArrayList(u8) = .{};
+        defer buffer.deinit(allocator);
 
         timer.reset();
         try frame.write(buffer.writer().any());
@@ -251,7 +251,7 @@ fn benchmarkSSE(allocator: std.mem.Allocator) !void {
     const event_counts = [_]usize{ 10, 100, 1000 };
 
     for (event_counts) |count| {
-        var stream = std.ArrayList(u8).init(allocator);
+        var stream: std.ArrayList(u8) = .{};
         defer stream.deinit();
 
         // Generate SSE stream

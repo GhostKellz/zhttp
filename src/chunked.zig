@@ -5,9 +5,9 @@ const std = @import("std");
 
 /// Chunked encoder for writing data in chunks
 pub const ChunkedEncoder = struct {
-    writer: std.io.AnyWriter,
+    writer: *std.Io.Writer,
 
-    pub fn init(writer: std.io.AnyWriter) ChunkedEncoder {
+    pub fn init(writer: *std.Io.Writer) ChunkedEncoder {
         return .{ .writer = writer };
     }
 
@@ -43,32 +43,32 @@ pub const ChunkedEncoder = struct {
 /// Chunked decoder for reading chunked data
 pub const ChunkedDecoder = struct {
     allocator: std.mem.Allocator,
-    reader: std.io.AnyReader,
+    reader: *std.Io.Reader,
     buffer: std.ArrayList(u8),
     finished: bool = false,
 
-    pub fn init(allocator: std.mem.Allocator, reader: std.io.AnyReader) ChunkedDecoder {
+    pub fn init(allocator: std.mem.Allocator, reader: *std.Io.Reader) ChunkedDecoder {
         return .{
             .allocator = allocator,
             .reader = reader,
-            .buffer = std.ArrayList(u8).init(allocator),
+            .buffer = .{},
         };
     }
 
     pub fn deinit(self: *ChunkedDecoder) void {
-        self.buffer.deinit();
+        self.buffer.deinit(self.allocator);
     }
 
     /// Read all chunked data into a buffer
     pub fn readAll(self: *ChunkedDecoder) ![]u8 {
-        var result = std.ArrayList(u8).init(self.allocator);
-        errdefer result.deinit();
+        var result: std.ArrayList(u8) = .{};
+        errdefer result.deinit(self.allocator);
 
         while (try self.readChunk()) |chunk| {
-            try result.appendSlice(chunk);
+            try result.appendSlice(self.allocator, chunk);
         }
 
-        return try result.toOwnedSlice();
+        return try result.toOwnedSlice(self.allocator);
     }
 
     /// Read the next chunk
@@ -100,22 +100,22 @@ pub const ChunkedDecoder = struct {
 
         // Read chunk data
         self.buffer.clearRetainingCapacity();
-        try self.buffer.ensureTotalCapacity(chunk_size);
+        try self.buffer.ensureTotalCapacity(self.allocator, chunk_size);
 
-        var read: usize = 0;
-        while (read < chunk_size) {
-            const to_read = chunk_size - read;
-            var temp_buf: [4096]u8 = undefined;
-            const n = try self.reader.read(temp_buf[0..@min(to_read, temp_buf.len)]);
+        var temp_buf: [4096]u8 = undefined;
+        var bytes_read: usize = 0;
+        while (bytes_read < chunk_size) {
+            const to_read = @min(chunk_size - bytes_read, temp_buf.len);
+            const n = try self.reader.readSliceShort(temp_buf[0..to_read]);
             if (n == 0) return error.UnexpectedEndOfChunk;
-            try self.buffer.appendSlice(temp_buf[0..n]);
-            read += n;
+            try self.buffer.appendSlice(self.allocator, temp_buf[0..n]);
+            bytes_read += n;
         }
 
         // Read trailing CRLF after chunk data
-        var crlf: [2]u8 = undefined;
-        _ = try self.reader.readAll(&crlf);
-        if (!std.mem.eql(u8, &crlf, "\r\n")) {
+        var crlf_buf: [2]u8 = undefined;
+        try self.reader.readSliceAll(&crlf_buf);
+        if (!std.mem.eql(u8, &crlf_buf, "\r\n")) {
             return error.InvalidChunkEncoding;
         }
 
@@ -126,7 +126,7 @@ pub const ChunkedDecoder = struct {
     fn readLine(self: *ChunkedDecoder, buf: []u8) ![]const u8 {
         var pos: usize = 0;
         while (pos < buf.len) {
-            const byte = try self.reader.readByte();
+            const byte = try self.reader.takeByte();
             if (byte == '\n') {
                 // Handle both LF and CRLF
                 if (pos > 0 and buf[pos - 1] == '\r') {
@@ -143,10 +143,10 @@ pub const ChunkedDecoder = struct {
 
 /// Encode data with chunked transfer encoding
 pub fn encode(allocator: std.mem.Allocator, data: []const u8, chunk_size: usize) ![]u8 {
-    var result = std.ArrayList(u8).init(allocator);
-    errdefer result.deinit();
+    var aw: std.Io.Writer.Allocating = .init(allocator);
+    defer aw.deinit();
 
-    var encoder = ChunkedEncoder.init(result.writer().any());
+    var encoder = ChunkedEncoder.init(&aw.writer);
 
     var offset: usize = 0;
     while (offset < data.len) {
@@ -158,13 +158,13 @@ pub fn encode(allocator: std.mem.Allocator, data: []const u8, chunk_size: usize)
 
     try encoder.finish(null);
 
-    return try result.toOwnedSlice();
+    return try aw.toOwnedSlice();
 }
 
 /// Decode chunked transfer encoded data
 pub fn decode(allocator: std.mem.Allocator, encoded: []const u8) ![]u8 {
-    var fbs = std.io.fixedBufferStream(encoded);
-    var decoder = ChunkedDecoder.init(allocator, fbs.reader().any());
+    var reader = std.Io.Reader.fixed(encoded);
+    var decoder = ChunkedDecoder.init(allocator, &reader);
     defer decoder.deinit();
 
     return try decoder.readAll();

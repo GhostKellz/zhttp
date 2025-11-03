@@ -93,17 +93,19 @@ pub const MultipartBody = struct {
         var boundary_buf: [32]u8 = undefined;
         var prng = std.Random.DefaultPrng.init(@intCast(std.time.microTimestamp()));
         const boundary = std.fmt.bufPrint(&boundary_buf, "----zhttp{d}", .{prng.random().int(u64)}) catch unreachable;
-        
+
         return MultipartBody{
             .allocator = allocator,
             .boundary = allocator.dupe(u8, boundary) catch unreachable,
-            .parts = std.ArrayList(Part){},
+            .parts = .{},
         };
     }
     
     pub fn deinit(self: *MultipartBody) void {
         self.allocator.free(self.boundary);
         for (self.parts.items) |*part| {
+            // Free part's owned content
+            part.content.deinit(self.allocator);
             if (part.headers) |*headers| {
                 headers.deinit(self.allocator);
             }
@@ -118,7 +120,7 @@ pub const MultipartBody = struct {
             .content = Body.fromString(value),
         });
     }
-    
+
     /// Add a file part
     pub fn addFile(self: *MultipartBody, name: []const u8, filename: []const u8, content: Body, content_type: ?[]const u8) !void {
         try self.parts.append(self.allocator, Part{
@@ -241,18 +243,18 @@ pub const BodyReader = struct {
     pub fn readAll(self: *BodyReader, max_size: usize) ![]u8 {
         var result: std.ArrayList(u8) = .{};
         defer result.deinit(self.allocator);
-        
+
         var buffer: [8192]u8 = undefined;
         while (result.items.len < max_size) {
             const bytes_read = try self.read(buffer[0..@min(buffer.len, max_size - result.items.len)]);
             if (bytes_read == 0) break;
             try result.appendSlice(self.allocator, buffer[0..bytes_read]);
         }
-        
+
         if (result.items.len >= max_size) {
             return error.BodyTooLarge;
         }
-        
+
         return try result.toOwnedSlice(self.allocator);
     }
 };

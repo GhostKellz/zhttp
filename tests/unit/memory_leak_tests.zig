@@ -77,11 +77,11 @@ test "HTTP/2 HPACK - no memory leaks on encoding" {
     var encoder = zhttp.Http2.HPACK.Encoder.init(allocator, 4096);
     defer encoder.deinit();
 
-    var buffer = std.ArrayList(u8).init(allocator);
-    defer buffer.deinit();
+    var aw: std.Io.Writer.Allocating = .init(allocator);
+    defer aw.deinit();
 
-    try encoder.encodeHeader(buffer.writer(), ":method", "GET");
-    try encoder.encodeHeader(buffer.writer(), ":path", "/");
+    try encoder.encodeHeader(&aw.writer, ":method", "GET");
+    try encoder.encodeHeader(&aw.writer, ":path", "/");
 }
 
 test "HTTP/2 HPACK - no memory leaks on decoding" {
@@ -90,21 +90,21 @@ test "HTTP/2 HPACK - no memory leaks on decoding" {
     var encoder = zhttp.Http2.HPACK.Encoder.init(allocator, 4096);
     defer encoder.deinit();
 
-    var buffer = std.ArrayList(u8).init(allocator);
-    defer buffer.deinit();
+    var aw: std.Io.Writer.Allocating = .init(allocator);
+    defer aw.deinit();
 
-    try encoder.encodeHeader(buffer.writer(), ":method", "GET");
+    try encoder.encodeHeader(&aw.writer, ":method", "GET");
 
     var decoder = zhttp.Http2.HPACK.Decoder.init(allocator, 4096);
     defer decoder.deinit();
 
-    var headers = try decoder.decodeHeaderBlock(buffer.items);
+    var headers = try decoder.decodeHeaderBlock(aw.writer.buffered());
     defer {
         for (headers.items) |h| {
             allocator.free(h.name);
             allocator.free(h.value);
         }
-        headers.deinit();
+        headers.deinit(allocator);
     }
 }
 
@@ -135,45 +135,31 @@ test "HTTP/2 connection - no memory leaks" {
 test "HTTP/3 QPACK - no memory leaks on encoding" {
     const allocator = testing.allocator;
 
-    var encoder = zhttp.Http3.QPACK.Encoder.init(allocator, 4096);
+    var encoder = zhttp.Http3.QPACK.Encoder.init(allocator, 4096, 0);
     defer encoder.deinit();
 
-    const headers = [_]struct { name: []const u8, value: []const u8 }{
-        .{ .name = ":method", .value = "GET" },
-        .{ .name = ":path", .value = "/" },
-    };
+    var aw: std.Io.Writer.Allocating = .init(allocator);
+    defer aw.deinit();
 
-    var buffer = std.ArrayList(u8).init(allocator);
-    defer buffer.deinit();
-
-    try encoder.encodeHeaders(buffer.writer().any(), &headers);
+    try zhttp.Http3.QPACK.encodeHeader(&aw.writer, ":method", "GET");
+    try zhttp.Http3.QPACK.encodeHeader(&aw.writer, ":path", "/");
 }
 
 test "HTTP/3 QPACK - no memory leaks on decoding" {
     const allocator = testing.allocator;
 
-    var encoder = zhttp.Http3.QPACK.Encoder.init(allocator, 4096);
-    defer encoder.deinit();
+    var aw: std.Io.Writer.Allocating = .init(allocator);
+    defer aw.deinit();
 
-    const headers = [_]struct { name: []const u8, value: []const u8 }{
-        .{ .name = ":method", .value = "GET" },
-    };
+    try zhttp.Http3.QPACK.encodeHeader(&aw.writer, ":method", "GET");
 
-    var buffer = std.ArrayList(u8).init(allocator);
-    defer buffer.deinit();
-
-    try encoder.encodeHeaders(buffer.writer().any(), &headers);
-
-    var decoder = zhttp.Http3.QPACK.Decoder.init(allocator, 4096);
+    var decoder = zhttp.Http3.QPACK.Decoder.init(allocator, 4096, 0);
     defer decoder.deinit();
 
-    var decoded = try decoder.decodeHeaderBlock(buffer.items);
+    const header = try zhttp.Http3.QPACK.decodeHeader(aw.writer.buffered());
     defer {
-        for (decoded.items) |h| {
-            allocator.free(h.name);
-            allocator.free(h.value);
-        }
-        decoded.deinit();
+        allocator.free(header.name);
+        allocator.free(header.value);
     }
 }
 
@@ -301,10 +287,10 @@ test "stress - HPACK encoding cycles" {
         var encoder = zhttp.Http2.HPACK.Encoder.init(allocator, 4096);
         defer encoder.deinit();
 
-        var buffer = std.ArrayList(u8).init(allocator);
-        defer buffer.deinit();
+        var aw: std.Io.Writer.Allocating = .init(allocator);
+        defer aw.deinit();
 
-        try encoder.encodeHeader(buffer.writer(), ":method", "GET");
-        try encoder.encodeHeader(buffer.writer(), ":path", "/api/test");
+        try encoder.encodeHeader(&aw.writer, ":method", "GET");
+        try encoder.encodeHeader(&aw.writer, ":path", "/api/test");
     }
 }

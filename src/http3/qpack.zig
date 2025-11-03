@@ -161,7 +161,7 @@ pub const DynamicTable = struct {
     pub fn init(allocator: std.mem.Allocator, max_size: usize) DynamicTable {
         return .{
             .allocator = allocator,
-            .entries = std.ArrayList(Entry).init(allocator),
+            .entries = .{},
             .size = 0,
             .max_size = max_size,
             .insert_count = 0,
@@ -172,7 +172,7 @@ pub const DynamicTable = struct {
         for (self.entries.items) |*entry| {
             entry.deinit(self.allocator);
         }
-        self.entries.deinit();
+        self.entries.deinit(self.allocator);
     }
 
     pub fn insert(self: *DynamicTable, name: []const u8, value: []const u8) !void {
@@ -189,7 +189,7 @@ pub const DynamicTable = struct {
             old.deinit(self.allocator);
         }
 
-        try self.entries.insert(0, new_entry);
+        try self.entries.insert(self.allocator, 0, new_entry);
         self.size += entry_size;
         self.insert_count += 1;
     }
@@ -305,7 +305,7 @@ pub const Decoder = struct {
 
     /// Decode header block
     pub fn decodeHeaders(self: *Decoder, data: []const u8) !std.ArrayList(struct { name: []u8, value: []u8 }) {
-        var headers = std.ArrayList(struct { name: []u8, value: []u8 }).init(self.allocator);
+        var headers: std.ArrayList(struct { name: []u8, value: []u8 }) = .{};
         var pos: usize = 0;
 
         // Skip Required Insert Count and Base
@@ -321,7 +321,7 @@ pub const Decoder = struct {
                 // Indexed field line
                 const index = try self.decodeInteger(data, &pos, 6);
                 const entry = try self.getTableEntry(index);
-                try headers.append(.{
+                try headers.append(self.allocator, .{
                     .name = try self.allocator.dupe(u8, entry.name),
                     .value = try self.allocator.dupe(u8, entry.value),
                 });
@@ -331,7 +331,7 @@ pub const Decoder = struct {
                 const name_index = try self.decodeInteger(data, &pos, 4);
                 const entry = try self.getTableEntry(name_index);
                 const value = try self.decodeString(data, &pos);
-                try headers.append(.{
+                try headers.append(self.allocator, .{
                     .name = try self.allocator.dupe(u8, entry.name),
                     .value = value,
                 });
@@ -340,7 +340,7 @@ pub const Decoder = struct {
                 pos += 1;
                 const name = try self.decodeString(data, &pos);
                 const value = try self.decodeString(data, &pos);
-                try headers.append(.{ .name = name, .value = value });
+                try headers.append(self.allocator, .{ .name = name, .value = value });
             }
         }
 
@@ -411,14 +411,14 @@ test "qpack encoder basic" {
     var encoder = Encoder.init(allocator, 4096, 100);
     defer encoder.deinit();
 
-    var buffer = std.ArrayList(u8).init(allocator);
-    defer buffer.deinit();
+    var buffer: std.ArrayList(u8) = .{};
+    defer buffer.deinit(allocator);
 
     const headers = [_]struct { name: []const u8, value: []const u8 }{
         .{ .name = ":method", .value = "GET" },
         .{ .name = ":path", .value = "/" },
     };
 
-    try encoder.encodeHeaders(buffer.writer(), &headers);
+    try encoder.encodeHeaders(buffer.writer(allocator), &headers);
     try std.testing.expect(buffer.items.len > 0);
 }

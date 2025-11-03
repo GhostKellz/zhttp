@@ -41,7 +41,7 @@ test "stress - HPACK dynamic table thrashing" {
     // Rapidly add/remove entries to stress dynamic table
     var i: usize = 0;
     while (i < 1000) : (i += 1) {
-        var buffer = std.ArrayList(u8).init(allocator);
+        var buffer: std.ArrayList(u8) = .{};
         defer buffer.deinit();
 
         // Encode with varying header names to fill dynamic table
@@ -71,7 +71,7 @@ test "stress - QPACK dynamic table thrashing" {
 
     var i: usize = 0;
     while (i < 1000) : (i += 1) {
-        var buffer = std.ArrayList(u8).init(allocator);
+        var buffer: std.ArrayList(u8) = .{};
         defer buffer.deinit();
 
         const header_name = try std.fmt.allocPrint(allocator, "x-header-{d}", .{i});
@@ -115,7 +115,7 @@ test "stress - chunked encoding large data" {
 test "stress - many WebSocket frames" {
     const allocator = testing.allocator;
 
-    var buffer = std.ArrayList(u8).init(allocator);
+    var buffer: std.ArrayList(u8) = .{};
     defer buffer.deinit();
 
     // Create 1000 text frames
@@ -146,7 +146,7 @@ test "stress - SSE with many events" {
     defer client.deinit();
 
     // Build a large SSE stream
-    var stream = std.ArrayList(u8).init(allocator);
+    var stream: std.ArrayList(u8) = .{};
     defer stream.deinit();
 
     var i: usize = 0;
@@ -206,7 +206,7 @@ test "stress - 0-RTT session cache turnover" {
     }
 
     // Cleanup expired (all should be expired with 1s lifetime)
-    std.time.sleep(2 * std.time.ns_per_s);
+    std.Thread.sleep(2 * std.time.ns_per_s);
     manager.cleanup();
 }
 
@@ -228,7 +228,7 @@ test "stress - multipart with many fields" {
         try builder.addField(name, value);
     }
 
-    var buffer = std.ArrayList(u8).init(allocator);
+    var buffer: std.ArrayList(u8) = .{};
     defer buffer.deinit();
 
     _ = try builder.writeTo(buffer.writer().any());
@@ -299,7 +299,7 @@ test "stress - HTTP/2 stream creation/destruction" {
 test "stress - brotli bit reader edge cases" {
     const allocator = testing.allocator;
 
-    var prng = std.rand.DefaultPrng.init(42);
+    var prng = std.Random.DefaultPrng.init(42);
 
     // Test reading various bit patterns
     var i: usize = 0;

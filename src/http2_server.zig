@@ -79,18 +79,20 @@ pub const Http2ServerResponse = struct {
         if (self.headers_sent) return error.HeadersAlreadySent;
 
         // Encode headers
-        var header_block = std.ArrayList(u8).init(self.allocator);
-        defer header_block.deinit();
+        var header_aw: std.Io.Writer.Allocating = .init(self.allocator);
+        defer header_aw.deinit();
 
         // Encode :status pseudo-header
         const status_str = try std.fmt.allocPrint(self.allocator, "{d}", .{self.status});
         defer self.allocator.free(status_str);
-        try self.encoder.encodeHeader(header_block.writer(), ":status", status_str);
+        try self.encoder.encodeHeader(&header_aw.writer, ":status", status_str);
 
         // Encode regular headers
         for (self.headers.items()) |header| {
-            try self.encoder.encodeHeader(header_block.writer(), header.name, header.value);
+            try self.encoder.encodeHeader(&header_aw.writer, header.name, header.value);
         }
+
+        const header_block = header_aw.writer.buffered();
 
         // Send HEADERS frame
         const headers_flags = frame.FrameFlags.END_HEADERS |
@@ -100,15 +102,15 @@ pub const Http2ServerResponse = struct {
             .headers,
             headers_flags,
             self.stream_id,
-            @intCast(header_block.items.len),
+            @intCast(header_block.len),
         );
 
-        var frame_buf = std.ArrayList(u8).init(self.allocator);
-        defer frame_buf.deinit();
+        var frame_aw: std.Io.Writer.Allocating = .init(self.allocator);
+        defer frame_aw.deinit();
 
-        try headers_frame.encode(frame_buf.writer());
-        try frame_buf.appendSlice(header_block.items);
-        try self.stream.writeAll(frame_buf.items);
+        try headers_frame.encode(&frame_aw.writer);
+        try frame_aw.writer.writeVec(&[_][]const u8{header_block});
+        try self.stream.writeAll(frame_aw.writer.buffered());
 
         self.headers_sent = true;
 
@@ -121,12 +123,12 @@ pub const Http2ServerResponse = struct {
                 @intCast(body.len),
             );
 
-            var data_buf = std.ArrayList(u8).init(self.allocator);
-            defer data_buf.deinit();
+            var data_aw: std.Io.Writer.Allocating = .init(self.allocator);
+            defer data_aw.deinit();
 
-            try data_frame.encode(data_buf.writer());
-            try data_buf.appendSlice(body);
-            try self.stream.writeAll(data_buf.items);
+            try data_frame.encode(&data_aw.writer);
+            try data_aw.writer.writeVec(&[_][]const u8{body});
+            try self.stream.writeAll(data_aw.writer.buffered());
         }
     }
 
@@ -212,7 +214,7 @@ pub const Http2Server = struct {
 
         // Read HTTP/2 connection preface
         var preface_buf: [24]u8 = undefined;
-        _ = try reader.readAll(&preface_buf);
+        _ = try reader.readSliceAll(&preface_buf);
 
         const expected_preface = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
         if (!std.mem.eql(u8, &preface_buf, expected_preface)) {
@@ -228,7 +230,9 @@ pub const Http2Server = struct {
         conn.settings.initial_window_size = self.options.initial_window_size;
 
         // Send initial SETTINGS frame
-        try conn.sendSettings(connection.stream.writer(), false);
+        var writer_buf: [8192]u8 = undefined;
+        const writer = connection.stream.writer(&writer_buf);
+        try conn.sendSettings(writer, false);
 
         // Process frames
         while (true) {
@@ -253,7 +257,7 @@ pub const Http2Server = struct {
                 // Read header block
                 const header_data = try self.allocator.alloc(u8, frame_header.length);
                 defer self.allocator.free(header_data);
-                _ = try reader.readAll(header_data);
+                _ = try reader.readSliceAll(header_data);
 
                 // Decode HPACK headers
                 var decoded_headers = try conn.decoder.decodeHeaderBlock(header_data);
@@ -262,7 +266,7 @@ pub const Http2Server = struct {
                         self.allocator.free(h.name);
                         self.allocator.free(h.value);
                     }
-                    decoded_headers.deinit();
+                    decoded_headers.deinit(self.allocator);
                 }
 
                 // Parse request from headers
@@ -289,8 +293,24 @@ pub const Http2Server = struct {
             },
 
             .data => {
-                // TODO: Handle data frames
-                try reader.skipBytes(frame_header.length, .{});
+                // Read data frame
+                const data = try self.allocator.alloc(u8, frame_header.length);
+                defer self.allocator.free(data);
+                _ = try reader.readSliceAll(data);
+
+                // Get or create stream
+                var stream_obj = conn.getStream(frame_header.stream_id);
+                if (stream_obj == null) {
+                    // If no stream exists, this is an error (DATA without HEADERS)
+                    return error.ProtocolError;
+                }
+
+                // Process data frame
+                const end_stream = (frame_header.flags & frame.FrameFlags.END_STREAM) != 0;
+                try stream_obj.?.processData(data, end_stream);
+
+                // TODO: If end_stream is set and this is a POST/PUT request,
+                // we would need to trigger request processing here
             },
 
             .settings => {
@@ -299,7 +319,9 @@ pub const Http2Server = struct {
 
                 if ((frame_header.flags & frame.FrameFlags.ACK) == 0) {
                     // Send SETTINGS ACK
-                    try conn.sendSettings(stream.writer(), true);
+                    var ack_writer_buf: [256]u8 = undefined;
+                    const ack_writer = stream.writer(&ack_writer_buf);
+                    try conn.sendSettings(ack_writer, true);
                 }
             },
 

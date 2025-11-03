@@ -6,7 +6,7 @@ const testing = std.testing;
 // These tests throw random/malformed data at parsers to find crashes and edge cases
 
 // Generate random bytes
-fn generateRandomBytes(allocator: std.mem.Allocator, prng: *std.rand.DefaultPrng, max_size: usize) ![]u8 {
+fn generateRandomBytes(allocator: std.mem.Allocator, prng: *std.Random.DefaultPrng, max_size: usize) ![]u8 {
     const size = prng.random().intRangeAtMost(usize, 1, max_size);
     const data = try allocator.alloc(u8, size);
     prng.random().bytes(data);
@@ -15,7 +15,7 @@ fn generateRandomBytes(allocator: std.mem.Allocator, prng: *std.rand.DefaultPrng
 
 test "fuzz - chunked decoder with random input" {
     const allocator = testing.allocator;
-    var prng = std.rand.DefaultPrng.init(12345);
+    var prng = std.Random.DefaultPrng.init(12345);
 
     var i: usize = 0;
     while (i < 1000) : (i += 1) {
@@ -41,7 +41,7 @@ test "fuzz - chunked decoder with random input" {
 
 test "fuzz - HPACK decoder with random input" {
     const allocator = testing.allocator;
-    var prng = std.rand.DefaultPrng.init(67890);
+    var prng = std.Random.DefaultPrng.init(67890);
 
     var decoder = zhttp.Http2.HPACK.Decoder.init(allocator, 4096);
     defer decoder.deinit();
@@ -74,7 +74,7 @@ test "fuzz - HPACK decoder with random input" {
 
 test "fuzz - QPACK decoder with random input" {
     const allocator = testing.allocator;
-    var prng = std.rand.DefaultPrng.init(11111);
+    var prng = std.Random.DefaultPrng.init(11111);
 
     var decoder = zhttp.Http3.QPACK.Decoder.init(allocator, 4096);
     defer decoder.deinit();
@@ -105,7 +105,7 @@ test "fuzz - QPACK decoder with random input" {
 
 test "fuzz - WebSocket frame decoder with random input" {
     const allocator = testing.allocator;
-    var prng = std.rand.DefaultPrng.init(22222);
+    var prng = std.Random.DefaultPrng.init(22222);
 
     var i: usize = 0;
     while (i < 1000) : (i += 1) {
@@ -131,7 +131,7 @@ test "fuzz - WebSocket frame decoder with random input" {
 
 test "fuzz - SSE parser with random input" {
     const allocator = testing.allocator;
-    var prng = std.rand.DefaultPrng.init(33333);
+    var prng = std.Random.DefaultPrng.init(33333);
 
     var parser = zhttp.SSE.Parser.init(allocator);
     defer parser.deinit();
@@ -157,7 +157,7 @@ test "fuzz - SSE parser with random input" {
 
 test "fuzz - brotli decoder with random input" {
     const allocator = testing.allocator;
-    var prng = std.rand.DefaultPrng.init(44444);
+    var prng = std.Random.DefaultPrng.init(44444);
 
     var i: usize = 0;
     while (i < 500) : (i += 1) {
@@ -184,7 +184,7 @@ test "fuzz - brotli decoder with random input" {
 
 test "fuzz - HTTP/3 VarInt decoder with random input" {
     const allocator = testing.allocator;
-    var prng = std.rand.DefaultPrng.init(55555);
+    var prng = std.Random.DefaultPrng.init(55555);
 
     var i: usize = 0;
     while (i < 2000) : (i += 1) {
@@ -206,7 +206,7 @@ test "fuzz - HTTP/3 VarInt decoder with random input" {
 
 test "fuzz - redirect URL parsing with malformed URLs" {
     const allocator = testing.allocator;
-    var prng = std.rand.DefaultPrng.init(66666);
+    var prng = std.Random.DefaultPrng.init(66666);
 
     const malformed_urls = [_][]const u8{
         "",
@@ -361,8 +361,8 @@ test "fuzz - boundary conditions for integers" {
     const allocator = testing.allocator;
 
     // VarInt edge cases
-    var buffer = std.ArrayList(u8).init(allocator);
-    defer buffer.deinit();
+    var buffer: std.ArrayList(u8) = .{};
+    defer buffer.deinit(allocator);
 
     const boundary_values = [_]u64{
         0,

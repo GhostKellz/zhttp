@@ -69,11 +69,13 @@ pub const Http2Client = struct {
         self.connection = conn;
 
         // Send initial SETTINGS frame
-        var settings_buf = std.ArrayList(u8).init(self.allocator);
-        defer settings_buf.deinit();
+        var settings_buf: std.ArrayList(u8) = .{};
+        defer settings_buf.deinit(self.allocator);
 
-        try self.connection.?.sendSettings(settings_buf.writer(), false);
-        try stream.writeAll(settings_buf.items);
+        var aw: std.Io.Writer.Allocating = .init(self.allocator);
+        defer aw.deinit();
+        try self.connection.?.sendSettings(&aw.writer, false);
+        try stream.writeAll(aw.writer.buffered());
 
         self.connected = true;
     }
@@ -90,40 +92,42 @@ pub const Http2Client = struct {
         const http2_stream = try conn.createStream();
 
         // Encode headers using HPACK
-        var header_block = std.ArrayList(u8).init(self.allocator);
-        defer header_block.deinit();
+        var header_aw: std.Io.Writer.Allocating = .init(self.allocator);
+        defer header_aw.deinit();
 
         // Add pseudo-headers (required for HTTP/2)
-        try conn.encoder.encodeHeader(header_block.writer(), ":method", request.method.toString());
-        try conn.encoder.encodeHeader(header_block.writer(), ":path", request.url);
-        try conn.encoder.encodeHeader(header_block.writer(), ":scheme", "https"); // TODO: Detect scheme
+        try conn.encoder.encodeHeader(&header_aw.writer, ":method", request.method.toString());
+        try conn.encoder.encodeHeader(&header_aw.writer, ":path", request.url);
+        try conn.encoder.encodeHeader(&header_aw.writer, ":scheme", "https"); // TODO: Detect scheme
 
         // Extract authority from headers or construct from URL
         const authority = request.headers.get("Host") orelse "localhost";
-        try conn.encoder.encodeHeader(header_block.writer(), ":authority", authority);
+        try conn.encoder.encodeHeader(&header_aw.writer, ":authority", authority);
 
         // Encode regular headers
         for (request.headers.items()) |header| {
             if (!std.ascii.eqlIgnoreCase(header.name, "Host")) {
-                try conn.encoder.encodeHeader(header_block.writer(), header.name, header.value);
+                try conn.encoder.encodeHeader(&header_aw.writer, header.name, header.value);
             }
         }
+
+        const header_block = header_aw.writer.buffered();
 
         // Create HEADERS frame
         const headers_frame = frame.FrameHeader.init(
             .headers,
             frame.FrameFlags.END_HEADERS | (if (request.body.isEmpty()) frame.FrameFlags.END_STREAM else 0),
             http2_stream.id,
-            @intCast(header_block.items.len),
+            @intCast(header_block.len),
         );
 
         // Send HEADERS frame
-        var frame_buf = std.ArrayList(u8).init(self.allocator);
-        defer frame_buf.deinit();
+        var frame_aw: std.Io.Writer.Allocating = .init(self.allocator);
+        defer frame_aw.deinit();
 
-        try headers_frame.encode(frame_buf.writer());
-        try frame_buf.appendSlice(header_block.items);
-        try stream_handle.writeAll(frame_buf.items);
+        try headers_frame.encode(&frame_aw.writer);
+        try frame_aw.writer.writeVec(&[_][]const u8{header_block});
+        try stream_handle.writeAll(frame_aw.writer.buffered());
 
         // Send body if present
         if (!request.body.isEmpty()) {
@@ -142,11 +146,11 @@ pub const Http2Client = struct {
         var conn = &self.connection.?;
 
         var read_buf: [8192]u8 = undefined;
-        const reader = stream_handle.reader(&read_buf);
+        var reader = stream_handle.reader(&read_buf);
 
         var response_headers: ?Header.HeaderMap = null;
         var response_status: u16 = 0;
-        var response_body = std.ArrayList(u8).init(self.allocator);
+        var response_body: std.ArrayList(u8) = .{};
 
         while (true) {
             // Read frame header
@@ -164,10 +168,10 @@ pub const Http2Client = struct {
                     // Read and decode headers
                     const header_data = try self.allocator.alloc(u8, frame_header.length);
                     defer self.allocator.free(header_data);
-                    _ = try reader.readAll(header_data);
+                    _ = try reader.readSliceAll(header_data);
 
                     var decoded_headers = try conn.decoder.decodeHeaderBlock(header_data);
-                    defer decoded_headers.deinit();
+                    defer decoded_headers.deinit(self.allocator);
 
                     // Parse headers
                     var headers = Header.HeaderMap.init(self.allocator);
@@ -194,9 +198,9 @@ pub const Http2Client = struct {
                     // Read data
                     const data = try self.allocator.alloc(u8, frame_header.length);
                     defer self.allocator.free(data);
-                    _ = try reader.readAll(data);
+                    _ = try reader.readSliceAll(data);
 
-                    try response_body.appendSlice(data);
+                    try response_body.appendSlice(self.allocator, data);
 
                     // Update flow control
                     conn.local_window_size -= @intCast(data.len);
@@ -214,10 +218,10 @@ pub const Http2Client = struct {
 
                     if ((frame_header.flags & frame.FrameFlags.ACK) == 0) {
                         // Send SETTINGS ACK
-                        var ack_buf = std.ArrayList(u8).init(self.allocator);
-                        defer ack_buf.deinit();
-                        try conn.sendSettings(ack_buf.writer(), true);
-                        try stream_handle.writeAll(ack_buf.items);
+                        var ack_aw: std.Io.Writer.Allocating = .init(self.allocator);
+                        defer ack_aw.deinit();
+                        try conn.sendSettings(&ack_aw.writer, true);
+                        try stream_handle.writeAll(ack_aw.writer.buffered());
                     }
                 },
 
@@ -239,7 +243,7 @@ pub const Http2Client = struct {
         return Response{
             .status = response_status,
             .headers = headers,
-            .body = @import("body.zig").Body{ .bytes = try response_body.toOwnedSlice() },
+            .body = @import("body.zig").Body{ .owned_bytes = try response_body.toOwnedSlice(self.allocator) },
             .version = .http_2_0,
             .allocator = self.allocator,
         };

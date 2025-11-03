@@ -84,13 +84,13 @@ pub const SessionCache = struct {
 
     /// Clean up expired sessions
     pub fn cleanup(self: *SessionCache) void {
-        var to_remove = std.ArrayList([]const u8).init(self.allocator);
-        defer to_remove.deinit();
+        var to_remove: std.ArrayList([]const u8) = .{};
+        defer to_remove.deinit(self.allocator);
 
         var iter = self.sessions.iterator();
         while (iter.next()) |entry| {
             if (!entry.value_ptr.isValid(self.max_age_seconds)) {
-                to_remove.append(entry.key_ptr.*) catch continue;
+                to_remove.append(self.allocator, entry.key_ptr.*) catch continue;
             }
         }
 
@@ -108,20 +108,21 @@ pub const ZeroRTTRequest = struct {
     path: []const u8,
 
     pub fn init(allocator: std.mem.Allocator, method: []const u8, path: []const u8) ZeroRTTRequest {
+        _ = allocator;
         return .{
-            .headers = std.ArrayList(struct { name: []const u8, value: []const u8 }).init(allocator),
+            .headers = .{},
             .body = null,
             .method = method,
             .path = path,
         };
     }
 
-    pub fn deinit(self: *ZeroRTTRequest) void {
-        self.headers.deinit();
+    pub fn deinit(self: *ZeroRTTRequest, allocator: std.mem.Allocator) void {
+        self.headers.deinit(allocator);
     }
 
-    pub fn addHeader(self: *ZeroRTTRequest, name: []const u8, value: []const u8) !void {
-        try self.headers.append(.{ .name = name, .value = value });
+    pub fn addHeader(self: *ZeroRTTRequest, allocator: std.mem.Allocator, name: []const u8, value: []const u8) !void {
+        try self.headers.append(allocator, .{ .name = name, .value = value });
     }
 
     pub fn setBody(self: *ZeroRTTRequest, body: []const u8) void {
@@ -239,11 +240,11 @@ test "0rtt request safety" {
     const allocator = std.testing.allocator;
 
     var req_get = ZeroRTTRequest.init(allocator, "GET", "/api/data");
-    defer req_get.deinit();
+    defer req_get.deinit(allocator);
     try std.testing.expect(req_get.isSafeFor0RTT());
 
     var req_post = ZeroRTTRequest.init(allocator, "POST", "/api/data");
-    defer req_post.deinit();
+    defer req_post.deinit(allocator);
     try std.testing.expect(!req_post.isSafeFor0RTT());
 }
 

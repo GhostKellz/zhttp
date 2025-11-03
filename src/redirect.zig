@@ -30,7 +30,7 @@ pub const RedirectTracker = struct {
     pub fn init(allocator: std.mem.Allocator, config: RedirectConfig) RedirectTracker {
         return .{
             .allocator = allocator,
-            .visited_urls = std.ArrayList([]const u8).init(allocator),
+            .visited_urls = .{},
             .config = config,
         };
     }
@@ -39,7 +39,7 @@ pub const RedirectTracker = struct {
         for (self.visited_urls.items) |url| {
             self.allocator.free(url);
         }
-        self.visited_urls.deinit();
+        self.visited_urls.deinit(self.allocator);
     }
 
     /// Check if we should follow this redirect
@@ -76,7 +76,7 @@ pub const RedirectTracker = struct {
         }
 
         const url_copy = try self.allocator.dupe(u8, url);
-        try self.visited_urls.append(url_copy);
+        try self.visited_urls.append(self.allocator, url_copy);
     }
 
     /// Get the method to use for redirect

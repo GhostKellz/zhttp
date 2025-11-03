@@ -76,18 +76,18 @@ pub const Http3Client = struct {
     }
 
     fn sendSettings(self: *Http3Client, conn: anytype) !void {
-        var settings_buf = std.ArrayList(u8).init(self.allocator);
-        defer settings_buf.deinit();
+        var settings_aw: std.Io.Writer.Allocating = .init(self.allocator);
+        defer settings_aw.deinit();
 
         // Encode SETTINGS frame
-        try h3_frame.VarInt.encode(settings_buf.writer(), h3_frame.FrameType.settings.toInt());
+        try h3_frame.VarInt.encode(&settings_aw.writer, h3_frame.FrameType.settings.toInt());
 
         // For now, send empty settings (will extend later)
-        try h3_frame.VarInt.encode(settings_buf.writer(), 0); // Length = 0
+        try h3_frame.VarInt.encode(&settings_aw.writer, 0); // Length = 0
 
         // Open control stream and send settings
         const control_stream = try conn.openStream(.unidirectional);
-        try control_stream.write(settings_buf.items);
+        try control_stream.write(settings_aw.writer.buffered());
     }
 
     /// Send HTTP/3 request
@@ -106,34 +106,36 @@ pub const Http3Client = struct {
         const stream = try conn.openStream(.bidirectional);
 
         // Encode headers using QPACK
-        var header_block = std.ArrayList(u8).init(self.allocator);
-        defer header_block.deinit();
+        var header_aw: std.Io.Writer.Allocating = .init(self.allocator);
+        defer header_aw.deinit();
 
         // Add pseudo-headers
-        try qpack.encodeHeader(&header_block, ":method", request.method.toString());
-        try qpack.encodeHeader(&header_block, ":path", request.url);
-        try qpack.encodeHeader(&header_block, ":scheme", "https");
+        try qpack.encodeHeader(&header_aw.writer, ":method", request.method.toString());
+        try qpack.encodeHeader(&header_aw.writer, ":path", request.url);
+        try qpack.encodeHeader(&header_aw.writer, ":scheme", "https");
 
         const authority = request.headers.get("Host") orelse "localhost";
-        try qpack.encodeHeader(&header_block, ":authority", authority);
+        try qpack.encodeHeader(&header_aw.writer, ":authority", authority);
 
         // Add regular headers
         for (request.headers.items()) |header| {
             if (!std.ascii.eqlIgnoreCase(header.name, "Host")) {
-                try qpack.encodeHeader(&header_block, header.name, header.value);
+                try qpack.encodeHeader(&header_aw.writer, header.name, header.value);
             }
         }
 
-        // Create HEADERS frame
-        var frame_buf = std.ArrayList(u8).init(self.allocator);
-        defer frame_buf.deinit();
+        const header_block = header_aw.writer.buffered();
 
-        try h3_frame.VarInt.encode(frame_buf.writer(), h3_frame.FrameType.headers.toInt());
-        try h3_frame.VarInt.encode(frame_buf.writer(), header_block.items.len);
-        try frame_buf.appendSlice(header_block.items);
+        // Create HEADERS frame
+        var frame_aw: std.Io.Writer.Allocating = .init(self.allocator);
+        defer frame_aw.deinit();
+
+        try h3_frame.VarInt.encode(&frame_aw.writer, h3_frame.FrameType.headers.toInt());
+        try h3_frame.VarInt.encode(&frame_aw.writer, header_block.len);
+        try frame_aw.writer.writeVec(&[_][]const u8{header_block});
 
         // Send frame
-        try stream.write(frame_buf.items);
+        try stream.write(frame_aw.writer.buffered());
 
         // Send body if present (as DATA frame)
         if (!request.body.isEmpty()) {
@@ -147,7 +149,7 @@ pub const Http3Client = struct {
     fn readResponse(self: *Http3Client, stream: anytype) !Response {
         var response_headers: ?Header.HeaderMap = null;
         var response_status: u16 = 0;
-        var response_body = std.ArrayList(u8).init(self.allocator);
+        var response_body: std.ArrayList(u8) = .{};
 
         while (true) {
             // Read frame type
@@ -192,7 +194,7 @@ pub const Http3Client = struct {
                     defer self.allocator.free(data);
                     _ = try stream.read(data);
 
-                    try response_body.appendSlice(data);
+                    try response_body.appendSlice(self.allocator, data);
                 },
 
                 else => {
@@ -210,7 +212,7 @@ pub const Http3Client = struct {
         return Response{
             .status = response_status,
             .headers = headers,
-            .body = @import("body.zig").Body{ .bytes = try response_body.toOwnedSlice() },
+            .body = @import("body.zig").Body{ .owned_bytes = try response_body.toOwnedSlice(self.allocator) },
             .version = .http_3_0,
             .allocator = self.allocator,
         };

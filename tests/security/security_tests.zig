@@ -23,7 +23,7 @@ test "security - HPACK prevents decompression bomb" {
     defer decoder.deinit();
 
     // Malicious header block that tries to expand to huge size
-    var malicious = std.ArrayList(u8).init(allocator);
+    var malicious: std.ArrayList(u8) = .{};
     defer malicious.deinit();
 
     // Indexed header field representation (references static table)
@@ -56,7 +56,7 @@ test "security - QPACK prevents decompression bomb" {
     defer decoder.deinit();
 
     // Similar attack for QPACK
-    var malicious = std.ArrayList(u8).init(allocator);
+    var malicious: std.ArrayList(u8) = .{};
     defer malicious.deinit();
 
     var i: usize = 0;
@@ -81,7 +81,7 @@ test "security - WebSocket prevents payload length overflow" {
     const allocator = testing.allocator;
 
     // Malicious frame with 64-bit length set to max
-    var malicious = std.ArrayList(u8).init(allocator);
+    var malicious: std.ArrayList(u8) = .{};
     defer malicious.deinit();
 
     try malicious.append(0x81); // FIN + text opcode
@@ -103,7 +103,7 @@ test "security - SSE prevents billion laughs attack" {
     defer parser.deinit();
 
     // Try to create deeply nested or repetitive data field
-    var malicious = std.ArrayList(u8).init(allocator);
+    var malicious: std.ArrayList(u8) = .{};
     defer malicious.deinit();
 
     // Many data fields for same event
@@ -176,7 +176,7 @@ test "security - HTTP/3 VarInt prevents overflow" {
     const allocator = testing.allocator;
 
     // Max safe value
-    var buffer = std.ArrayList(u8).init(allocator);
+    var buffer: std.ArrayList(u8) = .{};
     defer buffer.deinit();
 
     // Encode max safe u62 value
@@ -264,7 +264,7 @@ test "security - multipart prevents header injection" {
 
     try builder.addField(malicious_name, "value");
 
-    var buffer = std.ArrayList(u8).init(allocator);
+    var buffer: std.ArrayList(u8) = .{};
     defer buffer.deinit();
 
     _ = try builder.writeTo(buffer.writer().any());
@@ -326,7 +326,7 @@ test "security - brotli prevents zip bomb" {
     // Malicious brotli data claiming to decompress to huge size
     // Uncompressed block format: wbits(4) + islast(1) + type(2) + len(16) + ~len(16)
 
-    var malicious = std.ArrayList(u8).init(allocator);
+    var malicious: std.ArrayList(u8) = .{};
     defer malicious.deinit();
 
     // Create uncompressed block claiming huge size

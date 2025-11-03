@@ -5,10 +5,10 @@ const std = @import("std");
 
 /// Body stream interface
 pub const BodyStream = struct {
-    reader: std.io.AnyReader,
+    reader: *std.Io.Reader,
     content_length: ?usize, // null for chunked encoding
 
-    pub fn init(reader: std.io.AnyReader, content_length: ?usize) BodyStream {
+    pub fn init(reader: *std.Io.Reader, content_length: ?usize) BodyStream {
         return .{
             .reader = reader,
             .content_length = content_length,
@@ -17,11 +17,11 @@ pub const BodyStream = struct {
 
     /// Read data from the stream
     pub fn read(self: *BodyStream, buffer: []u8) !usize {
-        return try self.reader.read(buffer);
+        return try self.reader.readSliceShort(buffer);
     }
 
     /// Write stream to a writer (with optional chunked encoding)
-    pub fn writeTo(self: *BodyStream, writer: std.io.AnyWriter, use_chunked: bool) !usize {
+    pub fn writeTo(self: *BodyStream, writer: *std.Io.Writer, use_chunked: bool) !usize {
         var total_written: usize = 0;
         var buffer: [8192]u8 = undefined;
 
@@ -31,7 +31,7 @@ pub const BodyStream = struct {
             var encoder = chunked.ChunkedEncoder.init(writer);
 
             while (true) {
-                const n = try self.reader.read(&buffer);
+                const n = try self.reader.readSliceShort(&buffer);
                 if (n == 0) break;
 
                 try encoder.writeChunk(buffer[0..n]);
@@ -42,7 +42,7 @@ pub const BodyStream = struct {
         } else {
             // Regular streaming
             while (true) {
-                const n = try self.reader.read(&buffer);
+                const n = try self.reader.readSliceShort(&buffer);
                 if (n == 0) break;
 
                 try writer.writeAll(buffer[0..n]);
@@ -54,19 +54,22 @@ pub const BodyStream = struct {
     }
 
     /// Create from a file
-    pub fn fromFile(file: std.fs.File) BodyStream {
+    pub fn fromFile(allocator: std.mem.Allocator, file: std.fs.File) !BodyStream {
         const size = file.getEndPos() catch null;
+        const reader = try allocator.create(std.fs.File.Reader);
+        reader.* = file.reader();
         return .{
-            .reader = file.reader().any(),
+            .reader = &reader.interface,
             .content_length = size,
         };
     }
 
     /// Create from a slice
-    pub fn fromSlice(data: []const u8) BodyStream {
-        var fbs = std.io.fixedBufferStream(data);
+    pub fn fromSlice(allocator: std.mem.Allocator, data: []const u8) !BodyStream {
+        const reader = try allocator.create(std.Io.Reader);
+        reader.* = std.Io.Reader.fixed(data);
         return .{
-            .reader = fbs.reader().any(),
+            .reader = reader,
             .content_length = data.len,
         };
     }
@@ -85,13 +88,13 @@ pub const MultipartBuilder = struct {
         data: union(enum) {
             slice: []const u8,
             file: std.fs.File,
-            reader: std.io.AnyReader,
+            reader: *std.Io.Reader,
         },
     };
 
     pub fn init(allocator: std.mem.Allocator) !MultipartBuilder {
         // Generate random boundary
-        var prng = std.rand.DefaultPrng.init(@intCast(std.time.timestamp()));
+        var prng = std.Random.DefaultPrng.init(@intCast(std.time.timestamp()));
         const random = prng.random();
 
         var boundary_buf: [32]u8 = undefined;
@@ -104,18 +107,18 @@ pub const MultipartBuilder = struct {
         return .{
             .allocator = allocator,
             .boundary = boundary,
-            .parts = std.ArrayList(Part).init(allocator),
+            .parts = .{},
         };
     }
 
     pub fn deinit(self: *MultipartBuilder) void {
         self.allocator.free(self.boundary);
-        self.parts.deinit();
+        self.parts.deinit(self.allocator);
     }
 
     /// Add a text field
     pub fn addField(self: *MultipartBuilder, name: []const u8, value: []const u8) !void {
-        try self.parts.append(.{
+        try self.parts.append(self.allocator, .{
             .name = name,
             .content_type = null,
             .filename = null,
@@ -125,7 +128,7 @@ pub const MultipartBuilder = struct {
 
     /// Add a file
     pub fn addFile(self: *MultipartBuilder, field_name: []const u8, filename: []const u8, content_type: []const u8, file: std.fs.File) !void {
-        try self.parts.append(.{
+        try self.parts.append(self.allocator, .{
             .name = field_name,
             .content_type = content_type,
             .filename = filename,
@@ -139,7 +142,7 @@ pub const MultipartBuilder = struct {
     }
 
     /// Write multipart data to writer
-    pub fn writeTo(self: *MultipartBuilder, writer: std.io.AnyWriter) !usize {
+    pub fn writeTo(self: *MultipartBuilder, writer: *std.Io.Writer) !usize {
         var total_written: usize = 0;
 
         for (self.parts.items) |part| {
@@ -197,10 +200,10 @@ pub const MultipartBuilder = struct {
                         total_written += n;
                     }
                 },
-                .reader => |*r| {
+                .reader => |r| {
                     var buffer: [8192]u8 = undefined;
                     while (true) {
-                        const n = try r.read(&buffer);
+                        const n = try r.readSliceShort(&buffer);
                         if (n == 0) break;
                         try writer.writeAll(buffer[0..n]);
                         total_written += n;
@@ -224,23 +227,27 @@ pub const MultipartBuilder = struct {
 
     /// Build into a BodyStream
     pub fn build(self: *MultipartBuilder, allocator: std.mem.Allocator) !BodyStream {
-        var buffer = std.ArrayList(u8).init(allocator);
-        _ = try self.writeTo(buffer.writer().any());
+        var aw: std.Io.Writer.Allocating = .init(allocator);
+        defer aw.deinit();
 
-        const data = try buffer.toOwnedSlice();
-        var fbs = try allocator.create(std.io.FixedBufferStream([]const u8));
-        fbs.* = std.io.fixedBufferStream(data);
+        _ = try self.writeTo(&aw.writer);
+
+        const data = try aw.toOwnedSlice();
+        const reader = try allocator.create(std.Io.Reader);
+        reader.* = std.Io.Reader.fixed(data);
 
         return .{
-            .reader = fbs.reader().any(),
+            .reader = reader,
             .content_length = data.len,
         };
     }
 };
 
 test "body stream from slice" {
+    const allocator = std.testing.allocator;
     const data = "Hello, World!";
-    var stream = BodyStream.fromSlice(data);
+    var stream = try BodyStream.fromSlice(allocator, data);
+    defer allocator.destroy(stream.reader);
 
     var buffer: [100]u8 = undefined;
     const n = try stream.read(&buffer);
@@ -258,13 +265,15 @@ test "multipart builder" {
     try builder.addField("name", "John Doe");
     try builder.addField("email", "john@example.com");
 
-    var buffer = std.ArrayList(u8).init(allocator);
-    defer buffer.deinit();
+    var aw: std.Io.Writer.Allocating = .init(allocator);
+    defer aw.deinit();
 
-    _ = try builder.writeTo(buffer.writer().any());
+    _ = try builder.writeTo(&aw.writer);
+
+    const buffer = aw.writer.buffered();
 
     // Check that boundary is present
-    try std.testing.expect(std.mem.indexOf(u8, buffer.items, builder.boundary) != null);
-    try std.testing.expect(std.mem.indexOf(u8, buffer.items, "name=\"name\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, buffer.items, "John Doe") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buffer, builder.boundary) != null);
+    try std.testing.expect(std.mem.indexOf(u8, buffer, "name=\"name\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buffer, "John Doe") != null);
 }

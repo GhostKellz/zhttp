@@ -46,8 +46,8 @@ pub const Stream = struct {
             .id = stream_id,
             .state = .idle,
             .window_size = initial_window_size,
-            .headers_received = std.ArrayList(Header).init(allocator),
-            .data_buffer = std.ArrayList(u8).init(allocator),
+            .headers_received = .{},
+            .data_buffer = .{},
             .allocator = allocator,
             .local_window_size = initial_window_size,
             .remote_window_size = initial_window_size,
@@ -61,8 +61,8 @@ pub const Stream = struct {
         for (self.headers_received.items) |*header| {
             header.deinit(self.allocator);
         }
-        self.headers_received.deinit();
-        self.data_buffer.deinit();
+        self.headers_received.deinit(self.allocator);
+        self.data_buffer.deinit(self.allocator);
     }
 
     /// Process a DATA frame
@@ -76,7 +76,7 @@ pub const Stream = struct {
             return error.FlowControlError;
         }
 
-        try self.data_buffer.appendSlice(data);
+        try self.data_buffer.appendSlice(self.allocator, data);
         self.local_window_size -= @intCast(data.len);
 
         if (end_stream) {
@@ -92,7 +92,7 @@ pub const Stream = struct {
             self.transitionState(.open);
         }
 
-        try self.headers_received.appendSlice(headers);
+        try self.headers_received.appendSlice(self.allocator, headers);
 
         if (end_stream) {
             if (self.state == .open) {
@@ -254,7 +254,7 @@ pub const Connection = struct {
                         self.allocator.free(header.name);
                         self.allocator.free(header.value);
                     }
-                    decoded_headers.deinit();
+                    decoded_headers.deinit(self.allocator);
                 }
 
                 // Convert to Stream.Header

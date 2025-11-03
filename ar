@@ -1,0 +1,38 @@
+### zhttp - HTTP Client/Server Library
+- **Status**: ⚠️ Alpha/MVP
+- **Repository**: https://github.com/ghostkellz/zhttp
+- **Wraith Use**: **CRITICAL** - HTTP/1.1 and HTTP/2 client/server (bread and butter)
+
+#### What Wraith Needs:
+1. **HTTP/1.1 Server** - Request parsing, response generation
+2. **HTTP/1.1 Client** - Upstream connections, connection pooling
+3. **HTTP/2 Server** - Multiplexing, frame handling, ALPN
+4. **HTTP/2 Client** - Upstream HTTP/2 support
+5. **TLS Integration** - Works seamlessly with zcrypto
+6. **Header Manipulation** - Add/remove/modify headers
+7. **Chunked Transfer Encoding** - Proper streaming support
+8. **Keep-Alive & Connection Pooling** - Efficient connection reuse
+9. **Timeout Handling** - Configurable timeouts for all operations
+10. **Error Handling** - Comprehensive error types and recovery
+
+#### Stabilization Checklist:
+- [ ] Comprehensive test suite (HTTP/1.0, 1.1, 2.0)
+- [ ] Property-based testing with ghostspec
+- [ ] Fuzz testing for security (malformed requests/responses)
+- [ ] Benchmark suite (compare with nginx, h2o)
+- [ ] Memory leak detection (valgrind, sanitizers)
+- [ ] Zero-copy optimizations where possible
+- [ ] Documentation (API docs, examples, tutorials)
+- [ ] Edge case handling (oversized headers, malformed requests)
+- [ ] HTTP compliance testing (h2spec for HTTP/2)
+- [ ] Performance profiling and optimization
+- [ ] Connection pooling with health checks
+- [ ] Graceful degradation (HTTP/2 → HTTP/1.1 fallback)
+
+#### Current Gaps (Estimated):
+- HTTP/2 multiplexing may have edge cases
+- Connection pooling needs stress testing
+- Error recovery needs hardening
+- Need comprehensive RFC compliance testing
+
+

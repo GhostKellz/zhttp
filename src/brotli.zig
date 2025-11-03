@@ -65,7 +65,7 @@ const BitReader = struct {
             }
 
             const current_byte = self.data[self.byte_pos];
-            const bits_available = 8 - self.bit_pos;
+            const bits_available: u6 = 8 - @as(u6, self.bit_pos);
             const bits_to_read = @min(n - bits_read, bits_available);
 
             // Extract bits from current byte
@@ -132,26 +132,26 @@ pub const Decompressor = struct {
         const size = @as(usize, 1) << @intFromEnum(window_size);
         return .{
             .allocator = allocator,
-            .window = std.ArrayList(u8).init(allocator),
+            .window = .{},
             .window_size = size,
         };
     }
 
     pub fn deinit(self: *Decompressor) void {
-        self.window.deinit();
+        self.window.deinit(self.allocator);
     }
 
     /// Decompress brotli data
     pub fn decompress(self: *Decompressor, compressed: []const u8) ![]u8 {
         var reader = BitReader.init(compressed);
-        var output = std.ArrayList(u8).init(self.allocator);
-        errdefer output.deinit();
+        var output: std.ArrayList(u8) = .{};
+        errdefer output.deinit(self.allocator);
 
         // Read Brotli header
         const wbits = try reader.readBits(4);
         if (wbits == 0) {
             // Last empty block
-            return try output.toOwnedSlice();
+            return try output.toOwnedSlice(self.allocator);
         }
 
         const window_size = @as(usize, 1) << @intCast(wbits + 10);
@@ -181,7 +181,7 @@ pub const Decompressor = struct {
                     return error.UnexpectedEndOfStream;
                 }
 
-                try output.appendSlice(compressed[start..end]);
+                try output.appendSlice(self.allocator, compressed[start..end]);
                 reader.byte_pos = end;
             },
 
@@ -209,12 +209,12 @@ pub const Decompressor = struct {
             },
         }
 
-        return try output.toOwnedSlice();
+        return try output.toOwnedSlice(self.allocator);
     }
 
     /// Add data to sliding window
     fn addToWindow(self: *Decompressor, data: []const u8) !void {
-        try self.window.appendSlice(data);
+        try self.window.appendSlice(self.allocator, data);
 
         // Keep window size limited
         if (self.window.items.len > self.window_size) {
@@ -241,8 +241,8 @@ pub const Decompressor = struct {
 pub fn compress(allocator: std.mem.Allocator, data: []const u8, quality: Quality) ![]u8 {
     _ = quality; // Quality ignored for uncompressed mode
 
-    var output = std.ArrayList(u8).init(allocator);
-    errdefer output.deinit();
+    var output: std.ArrayList(u8) = .{};
+    errdefer output.deinit(allocator);
 
     // For simplicity, just store as uncompressed blocks
     // Real Brotli compression is extremely complex
@@ -262,21 +262,21 @@ pub fn compress(allocator: std.mem.Allocator, data: []const u8, quality: Quality
     // Block type (2 bits) = 0 (uncompressed)
     // Already 0
 
-    try output.append(current_byte);
+    try output.append(allocator, current_byte);
 
     // Length (16 bits) and ~length (16 bits)
     const len: u16 = @intCast(@min(data.len, 0xFFFF));
-    try output.append(@intCast(len & 0xFF));
-    try output.append(@intCast((len >> 8) & 0xFF));
+    try output.append(allocator, @intCast(len & 0xFF));
+    try output.append(allocator, @intCast((len >> 8) & 0xFF));
 
     const len_check: u16 = ~len;
-    try output.append(@intCast(len_check & 0xFF));
-    try output.append(@intCast((len_check >> 8) & 0xFF));
+    try output.append(allocator, @intCast(len_check & 0xFF));
+    try output.append(allocator, @intCast((len_check >> 8) & 0xFF));
 
     // Uncompressed data
-    try output.appendSlice(data[0..len]);
+    try output.appendSlice(allocator, data[0..len]);
 
-    return try output.toOwnedSlice();
+    return try output.toOwnedSlice(allocator);
 }
 
 /// Decompress Brotli data

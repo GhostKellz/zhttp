@@ -95,13 +95,13 @@ pub const Parser = struct {
     pub fn init(allocator: std.mem.Allocator) Parser {
         return .{
             .allocator = allocator,
-            .buffer = std.ArrayList(u8).init(allocator),
+            .buffer = .{},
             .current_event = EventBuilder.init(),
         };
     }
 
     pub fn deinit(self: *Parser) void {
-        self.buffer.deinit();
+        self.buffer.deinit(self.allocator);
     }
 
     /// Parse a line of SSE data
@@ -159,9 +159,9 @@ pub const Parser = struct {
 
     /// Parse chunk of data and return any complete events
     pub fn parseChunk(self: *Parser, chunk: []const u8) !std.ArrayList(Event) {
-        var events = std.ArrayList(Event).init(self.allocator);
+        var events: std.ArrayList(Event) = .{};
 
-        try self.buffer.appendSlice(chunk);
+        try self.buffer.appendSlice(self.allocator, chunk);
 
         // Process complete lines
         while (std.mem.indexOf(u8, self.buffer.items, "\n")) |newline_pos| {
@@ -174,11 +174,11 @@ pub const Parser = struct {
                 line;
 
             if (try self.parseLine(clean_line)) |event| {
-                try events.append(event);
+                try events.append(self.allocator, event);
             }
 
             // Remove processed line from buffer
-            try self.buffer.replaceRange(0, newline_pos + 1, &[_]u8{});
+            try self.buffer.replaceRange(self.allocator, 0, newline_pos + 1, &[_]u8{});
         }
 
         return events;
@@ -236,10 +236,10 @@ test "sse event formatting" {
     event.event_type = "message";
     event.id = "42";
 
-    var buffer = std.ArrayList(u8).init(allocator);
-    defer buffer.deinit();
+    var buffer: std.ArrayList(u8) = .{};
+    defer buffer.deinit(allocator);
 
-    try event.format(buffer.writer());
+    try event.format(buffer.writer(allocator));
 
     const expected = "event: message\nid: 42\ndata: Hello, World!\n\n";
     try std.testing.expectEqualStrings(expected, buffer.items);
@@ -282,7 +282,7 @@ test "sse client" {
 
     const chunk = "event: update\nid: 1\ndata: First event\n\n";
     var events = try client.processChunk(chunk);
-    defer events.deinit();
+    defer events.deinit(allocator);
 
     try std.testing.expectEqual(@as(usize, 1), events.items.len);
     try std.testing.expectEqualStrings("update", events.items[0].event_type.?);

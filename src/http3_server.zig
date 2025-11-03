@@ -79,42 +79,44 @@ pub const Http3ServerResponse = struct {
         if (self.headers_sent) return error.HeadersAlreadySent;
 
         // Encode headers using QPACK
-        var header_block = std.ArrayList(u8).init(self.allocator);
-        defer header_block.deinit();
+        var header_aw: std.Io.Writer.Allocating = .init(self.allocator);
+        defer header_aw.deinit();
 
         // Encode :status pseudo-header
         const status_str = try std.fmt.allocPrint(self.allocator, "{d}", .{self.status});
         defer self.allocator.free(status_str);
-        try qpack.encodeHeader(&header_block, ":status", status_str);
+        try qpack.encodeHeader(&header_aw.writer, ":status", status_str);
 
         // Encode regular headers
         for (self.headers.items()) |header| {
-            try qpack.encodeHeader(&header_block, header.name, header.value);
+            try qpack.encodeHeader(&header_aw.writer, header.name, header.value);
         }
 
-        // Create HEADERS frame
-        var frame_buf = std.ArrayList(u8).init(self.allocator);
-        defer frame_buf.deinit();
+        const header_block = header_aw.writer.buffered();
 
-        try h3_frame.VarInt.encode(frame_buf.writer(), h3_frame.FrameType.headers.toInt());
-        try h3_frame.VarInt.encode(frame_buf.writer(), header_block.items.len);
-        try frame_buf.appendSlice(header_block.items);
+        // Create HEADERS frame
+        var frame_aw: std.Io.Writer.Allocating = .init(self.allocator);
+        defer frame_aw.deinit();
+
+        try h3_frame.VarInt.encode(&frame_aw.writer, h3_frame.FrameType.headers.toInt());
+        try h3_frame.VarInt.encode(&frame_aw.writer, header_block.len);
+        try frame_aw.writer.writeVec(&[_][]const u8{header_block});
 
         // Send headers
-        try self.stream.write(frame_buf.items);
+        try self.stream.write(frame_aw.writer.buffered());
 
         self.headers_sent = true;
 
         // Send body if present (as DATA frame)
         if (body.len > 0) {
-            var data_buf = std.ArrayList(u8).init(self.allocator);
-            defer data_buf.deinit();
+            var data_aw: std.Io.Writer.Allocating = .init(self.allocator);
+            defer data_aw.deinit();
 
-            try h3_frame.VarInt.encode(data_buf.writer(), h3_frame.FrameType.data.toInt());
-            try h3_frame.VarInt.encode(data_buf.writer(), body.len);
-            try data_buf.appendSlice(body);
+            try h3_frame.VarInt.encode(&data_aw.writer, h3_frame.FrameType.data.toInt());
+            try h3_frame.VarInt.encode(&data_aw.writer, body.len);
+            try data_aw.writer.writeVec(&[_][]const u8{body});
 
-            try self.stream.write(data_buf.items);
+            try self.stream.write(data_aw.writer.buffered());
         }
 
         // Finish the stream
@@ -237,7 +239,7 @@ pub const Http3Server = struct {
 
         // Read frames from stream
         var request: ?Http3ServerRequest = null;
-        var request_body = std.ArrayList(u8).init(self.allocator);
+        var request_body: std.ArrayList(u8) = .{};
 
         while (true) {
             // Read frame type
@@ -267,7 +269,7 @@ pub const Http3Server = struct {
                     defer self.allocator.free(data);
                     _ = try stream.read(data);
 
-                    try request_body.appendSlice(data);
+                    try request_body.appendSlice(self.allocator, data);
                 },
 
                 else => {
@@ -281,7 +283,7 @@ pub const Http3Server = struct {
             defer req.deinit();
 
             // Set body
-            req.body = try request_body.toOwnedSlice();
+            req.body = try request_body.toOwnedSlice(self.allocator);
 
             // Create response
             var response = Http3ServerResponse.init(self.allocator, stream);
