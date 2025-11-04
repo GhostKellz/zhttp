@@ -122,7 +122,7 @@ pub const Client = struct {
                 // Exponential backoff
                 if (retry_count > 0) {
                     const delay_ms = std.math.pow(u64, 2, retry_count) * 1000; // 2^retry * 1s
-                    std.Thread.sleep(delay_ms * std.time.ns_per_ms);
+                    std.posix.nanosleep(0, delay_ms * std.time.ns_per_ms);
                 }
                 return self.sendWithRetries(request, retry_count + 1);
             },
@@ -414,16 +414,16 @@ pub const Client = struct {
         if (Http1.isChunkedEncoding(headers)) {
             // TODO: Implement chunked body reader
             var mutable_reader = reader;
-            return Body{ .reader = mutable_reader.interface() };
+            return Body{ .reader = mutable_reader.reader() };
         } else if (Http1.getContentLength(headers)) |content_length| {
             // TODO: Implement limited reader with content length
             _ = content_length;
             var mutable_reader = reader;
-            return Body{ .reader = mutable_reader.interface() };
+            return Body{ .reader = mutable_reader.reader() };
         } else {
             // Read until connection close
             var mutable_reader = reader;
-            return Body{ .reader = mutable_reader.interface() };
+            return Body{ .reader = mutable_reader.reader() };
         }
     }
 };
@@ -768,7 +768,7 @@ const Connection = struct {
                 return bytes_read;
             }
         }
-        return try self.tcp_stream.?.read(buffer);
+        return try std.posix.read(self.tcp_stream.?.socket.handle, buffer);
     }
     
     fn writeAll(self: *Connection, bytes: []const u8) !void {
@@ -777,7 +777,7 @@ const Connection = struct {
                 return try tls_client.writer.writeAll(bytes);
             }
         }
-        return try self.tcp_stream.?.writeAll(bytes);
+        return try compat.writeAll(self.tcp_stream.?, bytes);
     }
     
     fn flush(self: *Connection) !void {
@@ -785,10 +785,10 @@ const Connection = struct {
             if (self.tls_client) |*tls_client| {
                 try tls_client.writer.flush();
                 // Also flush the underlying buffered writer
-                try self.buffered_writer.?.interface.flush();
-                
+                try self.buffered_writer.?.writer().flush();
+
                 // Add delay like in working example to allow server to process request
-                std.Thread.sleep(100 * std.time.ns_per_ms);
+                std.posix.nanosleep(0, 100 * std.time.ns_per_ms);
             }
         }
     }

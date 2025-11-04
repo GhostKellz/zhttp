@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const net = std.net;
 const os = std.os;
 const linux = os.linux;
+const compat = @import("compat.zig");
 
 /// Homebrew async runtime for zhttp
 /// Provides minimal event loop, task scheduling, and timer support
@@ -100,7 +101,7 @@ pub const Timer = struct {
     cancelled: bool = false,
 
     pub fn init(id: u64, timeout_ms: u64, callback: *const fn(*Timer) void) Timer {
-        const now: u64 = @intCast(std.time.milliTimestamp());
+        const now: u64 = @intCast(compat.milliTimestamp());
         return .{
             .id = id,
             .deadline_ms = now + timeout_ms,
@@ -114,7 +115,7 @@ pub const Timer = struct {
 
     pub fn isExpired(self: *const Timer) bool {
         if (self.cancelled) return false;
-        const now: u64 = @intCast(std.time.milliTimestamp());
+        const now: u64 = @intCast(compat.milliTimestamp());
         return now >= self.deadline_ms;
     }
 };

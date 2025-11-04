@@ -65,12 +65,12 @@ pub fn main() !void {
     try tls_client.writer.flush();
     
     // Also flush underlying stream
-    try stream_writer.interface.flush();
+    try stream_writer.writer().flush();
     
     std.log.info("Request sent and flushed (both TLS and stream), reading response...", .{});
     
     // Small delay to let server process
-    std.Thread.sleep(100 * std.time.ns_per_ms);
+    std.posix.nanosleep(0, 100 * std.time.ns_per_ms);
     
     // Read some response
     var response_buffer: [1024]u8 = undefined;

@@ -91,7 +91,8 @@ pub const MultipartBody = struct {
     pub fn init(allocator: std.mem.Allocator) MultipartBody {
         // Generate random boundary
         var boundary_buf: [32]u8 = undefined;
-        var prng = std.Random.DefaultPrng.init(@intCast(std.time.microTimestamp()));
+        const compat = @import("compat.zig");
+        var prng = std.Random.DefaultPrng.init(@intCast(compat.milliTimestamp()));
         const boundary = std.fmt.bufPrint(&boundary_buf, "----zhttp{d}", .{prng.random().int(u64)}) catch unreachable;
 
         return MultipartBody{

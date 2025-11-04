@@ -63,7 +63,7 @@ pub const BufferedReader = struct {
         .discard = discardFn,
     };
 
-    fn streamFn(r: *Io.Reader, w: *Io.Writer, limit: Io.Limit) anyerror!usize {
+    fn streamFn(r: *Io.Reader, w: *Io.Writer, limit: Io.Limit) Io.Reader.Error!usize {
         const self: *BufferedReader = @fieldParentPtr("io_reader", r);
         _ = w;
 
@@ -71,15 +71,15 @@ pub const BufferedReader = struct {
         const max_read = limit.minInt(r.buffer.len);
         if (max_read == 0) return 0;
 
-        const n = posix.read(self.stream.socket.handle, r.buffer[0..max_read]) catch |err| {
-            return err;
+        const n = posix.read(self.stream.socket.handle, r.buffer[0..max_read]) catch {
+            return error.ReadFailed;
         };
         r.end = n;
         r.seek = 0;
         return n;
     }
 
-    fn discardFn(r: *Io.Reader, limit: Io.Limit) anyerror!usize {
+    fn discardFn(r: *Io.Reader, limit: Io.Limit) Io.Reader.Error!usize {
         const self: *BufferedReader = @fieldParentPtr("io_reader", r);
         var total: usize = 0;
         var remaining = limit.toInt() orelse std.math.maxInt(usize);
@@ -87,8 +87,8 @@ pub const BufferedReader = struct {
         var discard_buf: [4096]u8 = undefined;
         while (remaining > 0) {
             const to_read = @min(remaining, discard_buf.len);
-            const n = posix.read(self.stream.socket.handle, discard_buf[0..to_read]) catch |err| {
-                return if (total > 0) total else err;
+            const n = posix.read(self.stream.socket.handle, discard_buf[0..to_read]) catch {
+                return if (total > 0) total else error.ReadFailed;
             };
             if (n == 0) break;
             total += n;
@@ -109,7 +109,7 @@ pub const BufferedWriter = struct {
             .io_writer = .{
                 .vtable = &vtable,
                 .buffer = buffer,
-                .seek = 0,
+                .end = 0,
             },
         };
     }
@@ -119,53 +119,73 @@ pub const BufferedWriter = struct {
     }
 
     const vtable = Io.Writer.VTable{
-        .stream = streamFn,
+        .drain = drainFn,
         .flush = flushFn,
     };
 
-    fn streamFn(w: *Io.Writer, r: *Io.Reader, limit: Io.Limit) anyerror!usize {
+    fn drainFn(w: *Io.Writer, data: []const []const u8, splat: usize) Io.Writer.Error!usize {
         const self: *BufferedWriter = @fieldParentPtr("io_writer", w);
-        _ = r;
 
-        // Write buffered data first if any
-        if (w.seek > 0) {
+        // First flush any buffered data
+        if (w.end > 0) {
             var written: usize = 0;
-            while (written < w.seek) {
-                const n = posix.write(self.stream.socket.handle, w.buffer[written..w.seek]) catch |err| {
-                    w.seek -= written;
-                    return if (written > 0) written else err;
+            while (written < w.end) {
+                const n = posix.write(self.stream.socket.handle, w.buffer[written..w.end]) catch {
+                    return error.WriteFailed;
                 };
-                if (n == 0) return error.ConnectionClosed;
+                if (n == 0) return error.WriteFailed;
                 written += n;
             }
-            w.seek = 0;
+            w.end = 0;
         }
 
-        // Write directly from the limit if it fits
-        const max_write = limit.minInt(w.buffer.len);
-        if (max_write == 0) return 0;
+        // Then write the provided data
+        var total: usize = 0;
+        for (data) |slice| {
+            var written: usize = 0;
+            while (written < slice.len) {
+                const n = posix.write(self.stream.socket.handle, slice[written..]) catch {
+                    return error.WriteFailed;
+                };
+                if (n == 0) return error.WriteFailed;
+                written += n;
+                total += n;
+            }
+        }
 
-        const n = posix.write(self.stream.socket.handle, w.buffer[0..max_write]) catch |err| {
-            return err;
-        };
-        return n;
+        // Handle splat if needed
+        if (splat > 0 and data.len > 0) {
+            const last_slice = data[data.len - 1];
+            var i: usize = 0;
+            while (i < splat) : (i += 1) {
+                var written: usize = 0;
+                while (written < last_slice.len) {
+                    const n = posix.write(self.stream.socket.handle, last_slice[written..]) catch {
+                        return error.WriteFailed;
+                    };
+                    if (n == 0) return error.WriteFailed;
+                    written += n;
+                }
+            }
+        }
+
+        return total;
     }
 
-    fn flushFn(w: *Io.Writer) anyerror!void {
+    fn flushFn(w: *Io.Writer) Io.Writer.Error!void {
         const self: *BufferedWriter = @fieldParentPtr("io_writer", w);
 
-        if (w.seek == 0) return;
+        if (w.end == 0) return;
 
         var written: usize = 0;
-        while (written < w.seek) {
-            const n = posix.write(self.stream.socket.handle, w.buffer[written..w.seek]) catch |err| {
-                w.seek -= written;
-                return err;
+        while (written < w.end) {
+            const n = posix.write(self.stream.socket.handle, w.buffer[written..w.end]) catch {
+                return error.WriteFailed;
             };
-            if (n == 0) return error.ConnectionClosed;
+            if (n == 0) return error.WriteFailed;
             written += n;
         }
-        w.seek = 0;
+        w.end = 0;
     }
 };
 

@@ -10,6 +10,12 @@ const Response = @import("response.zig").Response;
 const Http1 = @import("http1.zig").Http1;
 const Error = @import("error.zig").Error;
 
+/// Server connection type (Zig 0.16 compatibility)
+const ServerConnection = struct {
+    stream: net.Stream,
+    address: net.IpAddress,
+};
+
 /// HTTP/1.1 Server configuration
 pub const ServerOptions = struct {
     /// Server host address
@@ -177,6 +183,7 @@ pub const Server = struct {
     listener: ?net.Server = null,
     handler: Handler,
     running: bool = false,
+    io: ?Io.Threaded = null,
 
     pub fn init(allocator: std.mem.Allocator, options: ServerOptions, handler: Handler) Server {
         return .{
@@ -188,7 +195,12 @@ pub const Server = struct {
 
     pub fn deinit(self: *Server) void {
         if (self.listener) |*listener| {
-            listener.deinit();
+            if (self.io) |*io| {
+                listener.deinit(io.io());
+            }
+        }
+        if (self.io) |*io| {
+            io.deinit();
         }
     }
 
@@ -198,7 +210,7 @@ pub const Server = struct {
 
         // Use Io.Threaded for blocking server
         var io = Io.Threaded.init(self.allocator);
-        defer io.deinit();
+        self.io = io;
 
         var listener = try address.listen(io.io(), .{
             .reuse_address = true,
@@ -209,22 +221,26 @@ pub const Server = struct {
         std.debug.print("HTTP/1.1 Server listening on {s}:{d}\n", .{ self.options.host, self.options.port });
 
         while (self.running) {
-            const connection = listener.accept() catch |err| {
+            const stream = listener.accept(io.io()) catch |err| {
                 std.debug.print("Failed to accept connection: {}\n", .{err});
                 continue;
             };
 
             // Handle connection (for now, single-threaded)
+            const connection = ServerConnection{
+                .stream = stream,
+                .address = stream.socket.address,
+            };
             self.handleConnection(connection) catch |err| {
                 std.debug.print("Error handling connection: {}\n", .{err});
-                connection.stream.close();
+                compat.closeStream(stream);
             };
         }
     }
 
     /// Handle a single client connection
-    fn handleConnection(self: *Server, connection: net.Server.Connection) !void {
-        defer connection.stream.close();
+    fn handleConnection(self: *Server, connection: ServerConnection) !void {
+        defer compat.closeStream(connection.stream);
 
         var keep_alive = true;
         while (keep_alive) {
@@ -265,14 +281,14 @@ pub const Server = struct {
     }
 
     /// Parse HTTP request from connection
-    fn parseRequest(self: *Server, connection: net.Server.Connection) !ServerRequest {
+    fn parseRequest(self: *Server, connection: ServerConnection) !ServerRequest {
         // Read until we have the full request headers
         var request_buf: [16384]u8 = undefined;
         var total_read: usize = 0;
 
         // Read headers
         while (total_read < request_buf.len) {
-            const bytes_read = try connection.stream.read(request_buf[total_read..]);
+            const bytes_read = try std.posix.read(connection.stream.socket.handle, request_buf[total_read..]);
             if (bytes_read == 0) return error.EndOfStream;
             total_read += bytes_read;
 
@@ -340,7 +356,7 @@ pub const Server = struct {
                 var remaining = content_length - already_read;
                 var offset = already_read;
                 while (remaining > 0) {
-                    const bytes_read = try connection.stream.read(body_buf[offset..content_length]);
+                    const bytes_read = try std.posix.read(connection.stream.socket.handle, body_buf[offset..content_length]);
                     if (bytes_read == 0) {
                         self.allocator.free(body_buf);
                         return error.IncompleteBody;

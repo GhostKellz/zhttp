@@ -201,13 +201,13 @@ pub fn ChunkedReader(comptime ReaderType: type) type {
                 },
                 .reading_chunk => {
                     const to_read = @min(buffer.len - total_read, self.chunk_remaining);
-                    const bytes_read = try self.reader.interface().*.readSliceShort(buffer[total_read .. total_read + to_read]);
-                    
+                    const bytes_read = try self.reader.reader().*.readSliceShort(buffer[total_read .. total_read + to_read]);
+
                     if (bytes_read == 0) return error.UnexpectedEndOfFile;
-                    
+
                     total_read += bytes_read;
                     self.chunk_remaining -= bytes_read;
-                    
+
                     if (self.chunk_remaining == 0) {
                         self.state = .reading_chunk_trailer;
                     }
@@ -215,7 +215,7 @@ pub fn ChunkedReader(comptime ReaderType: type) type {
                 .reading_chunk_trailer => {
                     // Read CRLF after chunk data
                     var trailer: [2]u8 = undefined;
-                    const bytes_read = try self.reader.interface().*.readSliceShort(&trailer);
+                    const bytes_read = try self.reader.reader().*.readSliceShort(&trailer);
                     if (bytes_read != 2 or trailer[0] != '\r' or trailer[1] != '\n') {
                         return error.ChunkedEncodingError;
                     }
@@ -244,12 +244,12 @@ pub fn ChunkedReader(comptime ReaderType: type) type {
         var pos: usize = 0;
         while (pos < buffer.len - 1) {
             var byte_buf: [1]u8 = undefined;
-            const bytes_read = try self.reader.interface().*.readSliceShort(&byte_buf);
+            const bytes_read = try self.reader.reader().*.readSliceShort(&byte_buf);
             if (bytes_read == 0) return error.UnexpectedEndOfFile;
             
             const byte = byte_buf[0];
             if (byte == '\r') {
-                const next_bytes = try self.reader.interface().*.readSliceShort(&byte_buf);
+                const next_bytes = try self.reader.reader().*.readSliceShort(&byte_buf);
                 if (next_bytes == 0) return error.UnexpectedEndOfFile;
                 const next_byte = byte_buf[0];
                 if (next_byte == '\n') {

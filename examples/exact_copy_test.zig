@@ -107,12 +107,12 @@ pub fn main() !void {
     // Send like HTTP client - writeAll, then flush both TLS and stream
     try tls_conn.client.writer.writeAll(request_buffer.items);
     try tls_conn.client.writer.flush();
-    try stream_writer.interface.flush();
+    try stream_writer.writer().flush();
     
     std.log.info("Request sent and flushed, reading response...", .{});
     
     // Add delay like in working minimal test
-    std.Thread.sleep(100 * std.time.ns_per_ms);
+    std.posix.nanosleep(0, 100 * std.time.ns_per_ms);
     
     // Now try to read using TLS client readSliceShort like HTTP client does
     std.log.info("Reading from TLS client...", .{});

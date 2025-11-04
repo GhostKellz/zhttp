@@ -101,12 +101,12 @@ pub fn main() !void {
     // Write request and flush exactly like HTTP client
     try tls_conn.client.writer.writeAll(request_buffer.items);
     try tls_conn.client.writer.flush();
-    try stream_writer.interface.flush();
+    try stream_writer.writer().flush();
     
     std.log.info("Request sent and flushed, reading response...", .{});
     
     // Add delay like in working minimal test
-    std.Thread.sleep(100 * std.time.ns_per_ms);
+    std.posix.nanosleep(0, 100 * std.time.ns_per_ms);
     
     // Read response
     var response_buffer: [1024]u8 = undefined;
