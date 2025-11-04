@@ -1,5 +1,7 @@
 const std = @import("std");
-const net = std.net;
+const Io = std.Io;
+const net = Io.net;
+const compat = @import("compat.zig");
 const Method = @import("method.zig").Method;
 const Header = @import("header.zig");
 const Body = @import("body.zig").Body;
@@ -41,7 +43,7 @@ pub const ServerRequest = struct {
     version: Response.HttpVersion,
     headers: Header.HeaderMap,
     body: []const u8,
-    remote_addr: net.Address,
+    remote_addr: net.IpAddress,
     allocator: std.mem.Allocator,
 
     pub fn deinit(self: *ServerRequest) void {
@@ -134,7 +136,7 @@ pub const ServerResponse = struct {
             .{ self.status, status_text },
         );
         defer self.allocator.free(status_line);
-        try self.stream.writeAll(status_line);
+        try compat.writeAll(self.stream, status_line);
 
         // Write headers
         for (self.headers.items()) |header| {
@@ -144,14 +146,14 @@ pub const ServerResponse = struct {
                 .{ header.name, header.value },
             );
             defer self.allocator.free(header_line);
-            try self.stream.writeAll(header_line);
+            try compat.writeAll(self.stream, header_line);
         }
 
         // End headers
-        try self.stream.writeAll("\r\n");
+        try compat.writeAll(self.stream, "\r\n");
 
         // Write body
-        try self.stream.writeAll(body);
+        try compat.writeAll(self.stream, body);
 
         self.body_sent = true;
     }
@@ -192,9 +194,13 @@ pub const Server = struct {
 
     /// Start the server
     pub fn listen(self: *Server) !void {
-        const address = try net.Address.parseIp(self.options.host, self.options.port);
+        const address = try net.IpAddress.parse(self.options.host, self.options.port);
 
-        var listener = try address.listen(.{
+        // Use Io.Threaded for blocking server
+        var io = Io.Threaded.init(self.allocator);
+        defer io.deinit();
+
+        var listener = try address.listen(io.io(), .{
             .reuse_address = true,
         });
         self.listener = listener;
@@ -229,7 +235,7 @@ pub const Server = struct {
                     return;
                 }
                 // Send 400 Bad Request
-                try connection.stream.writeAll("HTTP/1.1 400 Bad Request\r\n\r\n");
+                try compat.writeAll(connection.stream, "HTTP/1.1 400 Bad Request\r\n\r\n");
                 return err;
             };
             defer request.deinit();

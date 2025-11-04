@@ -1,6 +1,8 @@
 const std = @import("std");
-const net = std.net;
+const Io = std.Io;
+const net = Io.net;
 const crypto = std.crypto;
+const compat = @import("compat.zig");
 const Method = @import("method.zig").Method;
 const Request = @import("request.zig").Request;
 const RequestBuilder = @import("request.zig").RequestBuilder;
@@ -525,7 +527,7 @@ const ConnectionPool = struct {
         }
         
         // Update last used timestamp
-        conn.last_used = std.time.milliTimestamp();
+        conn.last_used = compat.milliTimestamp();
         
         const key = conn.pool_key.?;
         
@@ -564,7 +566,7 @@ const ConnectionPool = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         
-        const now = std.time.milliTimestamp();
+        const now = compat.milliTimestamp();
         var iterator = self.connections.iterator();
         
         while (iterator.next()) |entry| {
@@ -591,11 +593,11 @@ const Connection = struct {
     // TCP stream - always present and stable
     tcp_stream: ?net.Stream,
     
-    // Stable buffered I/O - embedded as fields to ensure stable memory addresses  
+    // Stable buffered I/O - embedded as fields to ensure stable memory addresses
     stream_read_buffer: []u8,
     stream_write_buffer: []u8,
-    buffered_reader: ?net.Stream.Reader,
-    buffered_writer: ?net.Stream.Writer,
+    buffered_reader: ?compat.BufferedReader,
+    buffered_writer: ?compat.BufferedWriter,
     
     // TLS fields - only used for HTTPS connections
     is_tls: bool,
@@ -625,7 +627,7 @@ const Connection = struct {
             .tls_write_buffer = &[_]u8{},
             .ca_bundle = null,
             .connected = false,
-            .last_used = std.time.milliTimestamp(),
+            .last_used = compat.milliTimestamp(),
             .allocator = allocator,
             .pool_key = null,
         };
@@ -658,7 +660,7 @@ const Connection = struct {
             bundle.deinit(self.allocator);
         }
         if (self.tcp_stream) |stream| {
-            stream.close();
+            compat.closeStream(stream);
         }
     }
     
@@ -666,12 +668,9 @@ const Connection = struct {
         if (self.isConnected()) return;
         
         // Connect to TCP server with timeout
-        self.tcp_stream = net.tcpConnectToHost(allocator, host, port) catch |err| switch (err) {
+        self.tcp_stream = compat.tcpConnectToHost(allocator, host, port) catch |err| switch (err) {
             error.ConnectionRefused => return Error.ConnectionRefused,
-            error.NetworkUnreachable => return Error.NetworkUnreachable,
-            error.ConnectionTimedOut => return Error.ConnectTimeout,
-            error.SystemResources => return Error.SystemResources,
-            error.PermissionDenied => return Error.PermissionDenied,
+            error.UnknownHostName => return Error.HostNotFound,
             else => return Error.SystemResources,
         };
         
@@ -683,15 +682,15 @@ const Connection = struct {
         errdefer allocator.free(self.stream_write_buffer);
         
         // Create stable buffered readers/writers from the stable TCP stream
-        self.buffered_reader = self.tcp_stream.?.reader(self.stream_read_buffer);
-        self.buffered_writer = self.tcp_stream.?.writer(self.stream_write_buffer);
+        self.buffered_reader = compat.BufferedReader.init(self.tcp_stream.?, self.stream_read_buffer);
+        self.buffered_writer = compat.BufferedWriter.init(self.tcp_stream.?, self.stream_write_buffer);
         
         if (std.mem.eql(u8, scheme, "https")) {
             try self.initTls(host, options.tls);
         }
         
         self.connected = true;
-        self.last_used = std.time.milliTimestamp();
+        self.last_used = compat.milliTimestamp();
     }
     
     fn close(self: *Connection) void {
@@ -712,33 +711,44 @@ const Connection = struct {
         // Load CA bundle if certificate verification is enabled
         if (tls_options.verify_certificates) {
             var ca_bundle = crypto.Certificate.Bundle{};
-            try ca_bundle.rescan(self.allocator);
+            // For blocking I/O, use Io.Threaded
+            var io = Io.Threaded.init(self.allocator);
+            defer io.deinit();
+            try ca_bundle.rescan(self.allocator, io.io(), compat.now());
             self.ca_bundle = ca_bundle;
         }
         errdefer if (self.ca_bundle) |*bundle| bundle.deinit(self.allocator);
         
+        // Generate entropy for TLS
+        var entropy: [176]u8 = undefined;
+        crypto.random.bytes(&entropy);
+
         // Initialize TLS client with stable reader/writer references
-        const tls_client_options = if (tls_options.verify_certificates) 
+        const tls_client_options = if (tls_options.verify_certificates)
             crypto.tls.Client.Options{
                 .host = .{ .explicit = host },
                 .ca = .{ .bundle = self.ca_bundle.? },
                 .write_buffer = self.tls_write_buffer,
                 .read_buffer = self.tls_read_buffer,
+                .entropy = &entropy,
+                .realtime_now_seconds = compat.realtimeNowSeconds(),
             }
-        else 
+        else
             crypto.tls.Client.Options{
                 .host = .no_verification,
                 .ca = .no_verification,
                 .write_buffer = self.tls_write_buffer,
                 .read_buffer = self.tls_read_buffer,
+                .entropy = &entropy,
+                .realtime_now_seconds = compat.realtimeNowSeconds(),
             };
         
         // Initialize TLS client with stable buffered reader/writer interfaces
         // The buffered_reader/writer are stable fields in this Connection object
         std.log.info("Initializing TLS handshake...", .{});
         self.tls_client = try std.crypto.tls.Client.init(
-            self.buffered_reader.?.interface(), 
-            &self.buffered_writer.?.interface, 
+            self.buffered_reader.?.reader(),
+            self.buffered_writer.?.writer(),
             tls_client_options
         );
         std.log.info("TLS handshake completed successfully!", .{});

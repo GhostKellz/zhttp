@@ -1,6 +1,8 @@
 const std = @import("std");
-const net = std.net;
+const Io = std.Io;
+const net = Io.net;
 const crypto = std.crypto;
+const compat = @import("zhttp").compat;
 
 // This is an EXACT copy of the working debug_tls_like_client.zig
 // but we'll gradually modify it to match the HTTP client pattern
@@ -29,8 +31,8 @@ pub fn main() !void {
     std.log.info("Connecting to httpbin.org:443...", .{});
     
     // Connect to HTTPS server
-    const stream = try net.tcpConnectToHost(allocator, "httpbin.org", 443);
-    defer stream.close();
+    const stream = try compat.tcpConnectToHost(allocator, "httpbin.org", 443);
+    defer compat.closeStream(stream);
     
     std.log.info("TCP connection established", .{});
     
@@ -49,19 +51,25 @@ pub fn main() !void {
     const stream_write_buffer = try allocator.alloc(u8, min_buf_len);
     defer allocator.free(stream_write_buffer);
     
-    var stream_reader = stream.reader(stream_read_buffer);
-    var stream_writer = stream.writer(stream_write_buffer);
-    
+    var stream_reader = compat.BufferedReader.init(stream, stream_read_buffer);
+    var stream_writer = compat.BufferedWriter.init(stream, stream_write_buffer);
+
+    // Generate entropy for TLS
+    var entropy: [176]u8 = undefined;
+    crypto.random.bytes(&entropy);
+
     const tls_options = crypto.tls.Client.Options{
         .host = .no_verification,
         .ca = .no_verification,
         .write_buffer = tls_write_buffer,
         .read_buffer = tls_read_buffer,
+        .entropy = &entropy,
+        .realtime_now_seconds = compat.realtimeNowSeconds(),
     };
     
     std.log.info("Initializing TLS handshake...", .{});
     
-    const tls_client = crypto.tls.Client.init(stream_reader.interface(), &stream_writer.interface, tls_options) catch |err| {
+    const tls_client = crypto.tls.Client.init(stream_reader.reader(), stream_writer.writer(), tls_options) catch |err| {
         std.log.err("TLS init failed: {}", .{err});
         return;
     };

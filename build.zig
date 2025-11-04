@@ -103,6 +103,7 @@ pub fn build(b: *std.Build) void {
             // definition if desireable (e.g. firmware for embedded devices).
             .target = target,
             .optimize = optimize,
+            .link_libc = true,
             // List of modules available for import in source files part of the
             // root module.
             .imports = &.{
@@ -251,6 +252,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("tests/benchmark.zig"),
             .target = target,
             .optimize = optimize,
+            .link_libc = true,
             .imports = &.{
                 .{ .name = "zhttp", .module = mod },
                 .{ .name = "build_options", .module = build_options_module },
@@ -291,6 +293,7 @@ pub fn build(b: *std.Build) void {
                 .root_source_file = b.path(example.path),
                 .target = target,
                 .optimize = optimize,
+                .link_libc = true,
                 .imports = &.{
                 .{ .name = "zhttp", .module = mod },
                 .{ .name = "build_options", .module = build_options_module },

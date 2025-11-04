@@ -38,6 +38,9 @@ pub const Brotli = @import("brotli.zig");
 pub const ConnectionPool = @import("connection_pool.zig").ConnectionPool;
 pub const PoolConfig = @import("connection_pool.zig").PoolConfig;
 
+// Compatibility helpers for Zig 0.16
+pub const compat = @import("compat.zig");
+
 // Chunked transfer encoding
 pub const Chunked = @import("chunked.zig");
 

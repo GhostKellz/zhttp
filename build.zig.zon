@@ -32,9 +32,9 @@
     // Once all dependencies are fetched, `zig build` no longer requires
     // internet connectivity.
     .dependencies = .{
-        // zsync removed - using homebrew async runtime
         .zquic = .{
-            .path = "../zquic",
+            .url = "https://github.com/ghostkellz/zquic/archive/refs/heads/main.tar.gz",
+            .hash = "zquic-0.9.1-2rPds_HJmxPG7o8qYwnGdYHhKGu12-1Li00E5M6-u3yh",
         },
     },
     .paths = .{

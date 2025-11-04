@@ -1,8 +1,10 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const build_options = @import("build_options");
-const net = std.net;
+const Io = std.Io;
+const net = Io.net;
 const crypto = std.crypto;
+const compat = @import("compat.zig");
 const Method = @import("method.zig").Method;
 const Request = @import("request.zig").Request;
 const RequestBuilder = @import("request.zig").RequestBuilder;
@@ -433,7 +435,7 @@ const AsyncConnectionPool = struct {
             return;
         }
         
-        conn.last_used = std.time.milliTimestamp();
+        conn.last_used = compat.milliTimestamp();
         
         const key = conn.pool_key.?;
         
@@ -478,7 +480,7 @@ const AsyncConnection = struct {
             .is_tls = false,
             .tls_client = null,
             .connected = false,
-            .last_used = std.time.milliTimestamp(),
+            .last_used = compat.milliTimestamp(),
             .allocator = allocator,
             .pool_key = null,
         };
@@ -495,7 +497,7 @@ const AsyncConnection = struct {
         }
         
         if (self.stream) |stream| {
-            stream.close();
+            compat.closeStream(stream);
         }
     }
     
@@ -503,14 +505,14 @@ const AsyncConnection = struct {
         if (self.isConnected()) return;
         
         // For now, use basic connection (could be enhanced with async DNS resolution)
-        self.stream = try net.tcpConnectToHost(allocator, host, port);
+        self.stream = try compat.tcpConnectToHost(allocator, host, port);
         
         if (std.mem.eql(u8, scheme, "https")) {
             try self.initTls(host, options.tls);
         }
         
         self.connected = true;
-        self.last_used = std.time.milliTimestamp();
+        self.last_used = compat.milliTimestamp();
     }
     
     fn initTls(self: *AsyncConnection, host: []const u8, tls_options: AsyncClientOptions.TlsOptions) !void {
@@ -526,7 +528,7 @@ const AsyncConnection = struct {
         // For now use synchronous write - can be improved with event loop integration
         _ = event_loop;
         if (self.stream) |stream| {
-            try stream.writeAll(data);
+            try compat.writeAll(stream, data);
         } else {
             return error.NotConnected;
         }
@@ -537,7 +539,7 @@ const AsyncConnection = struct {
         // For now use synchronous read - can be improved with event loop integration
         _ = event_loop;
         if (self.stream) |stream| {
-            return try stream.read(buffer);
+            return try std.posix.read(stream.socket.handle, buffer);
         } else {
             return error.NotConnected;
         }

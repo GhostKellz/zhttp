@@ -1,5 +1,7 @@
 const std = @import("std");
-const net = std.net;
+const Io = std.Io;
+const net = Io.net;
+const compat = @import("compat.zig");
 
 /// Connection pooling with keep-alive support
 /// Implements connection reuse per RFC 7230 Section 6.3
@@ -28,19 +30,19 @@ pub const PooledConnection = struct {
             .host = try allocator.dupe(u8, host),
             .port = port,
             .state = .idle,
-            .last_used = std.time.timestamp(),
+            .last_used = compat.milliTimestamp(),
             .use_count = 0,
             .is_tls = is_tls,
         };
     }
 
     pub fn deinit(self: *PooledConnection, allocator: std.mem.Allocator) void {
-        self.stream.close();
+        compat.closeStream(self.stream);
         allocator.free(self.host);
     }
 
     pub fn isStale(self: *const PooledConnection, max_idle_seconds: i64) bool {
-        const now = std.time.timestamp();
+        const now = compat.milliTimestamp() / 1000;
         return (now - self.last_used) > max_idle_seconds;
     }
 
@@ -140,7 +142,7 @@ pub const ConnectionPool = struct {
     /// Create a new connection
     fn createConnection(self: *ConnectionPool, host: []const u8, port: u16, is_tls: bool) !*PooledConnection {
         // Connect to the host
-        const stream = try net.tcpConnectToHost(self.allocator, host, port);
+        const stream = try compat.tcpConnectToHost(self.allocator, host, port);
         errdefer stream.close();
 
         // TODO: Handle TLS handshake if is_tls is true
@@ -237,7 +239,7 @@ test "connection pool basic" {
 test "pooled connection staleness" {
     const allocator = std.testing.allocator;
 
-    var stream = try net.tcpConnectToHost(allocator, "localhost", 80);
+    var stream = try compat.tcpConnectToHost(allocator, "localhost", 80);
     defer stream.close();
 
     var conn = try PooledConnection.init(allocator, stream, "localhost", 80, false);
