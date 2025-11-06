@@ -47,13 +47,13 @@ pub const PooledConnection = struct {
     }
 
     pub fn markUsed(self: *PooledConnection) void {
-        self.last_used = std.time.timestamp();
+        self.last_used = (try std.time.Instant.now()).timestamp.sec;
         self.use_count += 1;
         self.state = .active;
     }
 
     pub fn markIdle(self: *PooledConnection) void {
-        self.last_used = std.time.timestamp();
+        self.last_used = (try std.time.Instant.now()).timestamp.sec;
         self.state = .idle;
     }
 };
@@ -249,6 +249,6 @@ test "pooled connection staleness" {
     try std.testing.expect(!conn.isStale(90));
 
     // Simulate old timestamp
-    conn.last_used = std.time.timestamp() - 100;
+    conn.last_used = (try std.time.Instant.now()).timestamp.sec - 100;
     try std.testing.expect(conn.isStale(90));
 }

@@ -94,7 +94,7 @@ pub const MultipartBuilder = struct {
 
     pub fn init(allocator: std.mem.Allocator) !MultipartBuilder {
         // Generate random boundary
-        var prng = std.Random.DefaultPrng.init(@intCast(std.time.timestamp()));
+        var prng = std.Random.DefaultPrng.init(@intCast((try std.time.Instant.now()).timestamp.sec));
         const random = prng.random();
 
         var boundary_buf: [32]u8 = undefined;

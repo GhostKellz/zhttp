@@ -14,7 +14,7 @@ pub const SessionTicket = struct {
     pub fn init(allocator: std.mem.Allocator, ticket: []const u8, server_name: []const u8, max_early_data_size: u32) !SessionTicket {
         return .{
             .ticket = try allocator.dupe(u8, ticket),
-            .timestamp = std.time.timestamp(),
+            .timestamp = (try std.time.Instant.now()).timestamp.sec,
             .server_name = try allocator.dupe(u8, server_name),
             .max_early_data_size = max_early_data_size,
         };
@@ -27,7 +27,7 @@ pub const SessionTicket = struct {
 
     /// Check if ticket is still valid (not expired)
     pub fn isValid(self: *const SessionTicket, max_age_seconds: i64) bool {
-        const age = std.time.timestamp() - self.timestamp;
+        const age = (try std.time.Instant.now()).timestamp.sec - self.timestamp;
         return age < max_age_seconds;
     }
 };
@@ -232,7 +232,7 @@ test "session ticket validity" {
     try std.testing.expect(ticket.isValid(86400));
 
     // Simulate old ticket
-    ticket.timestamp = std.time.timestamp() - 100000;
+    ticket.timestamp = (try std.time.Instant.now()).timestamp.sec - 100000;
     try std.testing.expect(!ticket.isValid(86400));
 }
 
