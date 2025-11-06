@@ -221,8 +221,8 @@ pub const Frame = struct {
     }
 
     /// Create a close frame
-    pub fn close(allocator: std.mem.Allocator, code: CloseCode, reason: ?[]const u8, masked: bool) !Frame {
-        var payload = std.ArrayList(u8).init(allocator);
+    pub fn close(_: std.mem.Allocator, code: CloseCode, reason: ?[]const u8, masked: bool) !Frame {
+        var payload = .{ };
         errdefer payload.deinit();
 
         // Write close code (2 bytes, big-endian)
@@ -330,8 +330,8 @@ pub const Upgrade = struct {
     }
 
     /// Create upgrade request headers
-    pub fn createUpgradeHeaders(allocator: std.mem.Allocator, host: []const u8, path: []const u8, key: []const u8) !std.ArrayList(struct { name: []const u8, value: []const u8 }) {
-        var headers = std.ArrayList(struct { name: []const u8, value: []const u8 }).init(allocator);
+    pub fn createUpgradeHeaders(_: std.mem.Allocator, host: []const u8, path: []const u8, key: []const u8) !std.ArrayList(struct { name: []const u8, value: []const u8 }) {
+        var headers = .{ };
 
         try headers.append(.{ .name = "Host", .value = host });
         try headers.append(.{ .name = "Upgrade", .value = "websocket" });
@@ -361,7 +361,7 @@ pub const Upgrade = struct {
 };
 
 test "websocket frame header encoding" {
-    const allocator = std.testing.allocator;
+    _ = std.testing.allocator;
 
     const header = FrameHeader{
         .fin = true,
@@ -371,7 +371,7 @@ test "websocket frame header encoding" {
         .masking_key = null,
     };
 
-    var buffer = std.ArrayList(u8).init(allocator);
+    var buffer = .{ };
     defer buffer.deinit();
 
     try header.encode(buffer.writer());
