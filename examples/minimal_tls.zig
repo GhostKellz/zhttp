@@ -8,36 +8,40 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
-    
+
+    // Create Io instance for random number generation
+    var io = Io.Threaded.init(allocator, .{ .environ = .empty });
+    defer io.deinit();
+
     std.log.info("Connecting to httpbin.org:443...", .{});
-    
+
     // Connect to HTTPS server
     const stream = try compat.tcpConnectToHost(allocator, "httpbin.org", 443);
     defer compat.closeStream(stream);
-    
+
     std.log.info("TCP connection established", .{});
-    
+
     // Set up TLS
     const min_buf_len = crypto.tls.max_ciphertext_record_len;
-    
+
     const tls_read_buffer = try allocator.alloc(u8, min_buf_len);
     defer allocator.free(tls_read_buffer);
-    
+
     const tls_write_buffer = try allocator.alloc(u8, min_buf_len);
     defer allocator.free(tls_write_buffer);
-    
+
     const stream_read_buffer = try allocator.alloc(u8, min_buf_len);
     defer allocator.free(stream_read_buffer);
-    
+
     const stream_write_buffer = try allocator.alloc(u8, min_buf_len);
     defer allocator.free(stream_write_buffer);
-    
+
     var stream_reader = compat.BufferedReader.init(stream, stream_read_buffer);
     var stream_writer = compat.BufferedWriter.init(stream, stream_write_buffer);
 
-    // Generate entropy for TLS
-    var entropy: [176]u8 = undefined;
-    crypto.random.bytes(&entropy);
+    // Generate entropy for TLS (240 bytes required in Zig 0.16)
+    var entropy: [240]u8 = undefined;
+    io.io().random(&entropy);
 
     const tls_options = crypto.tls.Client.Options{
         .host = .no_verification,
@@ -70,7 +74,7 @@ pub fn main() !void {
     std.log.info("Request sent and flushed (both TLS and stream), reading response...", .{});
     
     // Small delay to let server process
-    std.posix.nanosleep(0, 100 * std.time.ns_per_ms);
+    compat.nanosleep(0, 100 * std.time.ns_per_ms);
     
     // Read some response
     var response_buffer: [1024]u8 = undefined;

@@ -209,7 +209,7 @@ pub const Server = struct {
         const address = try net.IpAddress.parse(self.options.host, self.options.port);
 
         // Use Io.Threaded for blocking server
-        var io = Io.Threaded.init(self.allocator);
+        var io = Io.Threaded.init(self.allocator, .{ .environ = .empty });
         self.io = io;
 
         var listener = try address.listen(io.io(), .{

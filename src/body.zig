@@ -21,7 +21,7 @@ pub const Body = union(enum) {
             .none => 0,
             .bytes => |bytes| bytes.len,
             .owned_bytes => |bytes| bytes.len,
-            .file => |_| null, // Would need to stat the file
+            .file => null, // Would need to stat the file
             .reader, .multipart => null, // Unknown length for streams
         };
     }
@@ -149,7 +149,7 @@ pub const BodyReader = struct {
             pos: usize,
         },
         file: struct {
-            file: std.fs.File,
+            fd: std.posix.fd_t,
         },
         reader: *std.Io.Reader,
         finished: void,
@@ -165,7 +165,7 @@ pub const BodyReader = struct {
     
     pub fn deinit(self: *BodyReader) void {
         switch (self.state) {
-            .file => |*file_state| file_state.file.close(),
+            .file => |file_state| std.posix.close(file_state.fd),
             else => {},
         }
         // Clean up the body itself
@@ -191,11 +191,16 @@ pub const BodyReader = struct {
                         return self.read(buffer);
                     },
                     .file => |path| {
-                        const file = std.fs.cwd().openFile(path, .{}) catch |err| switch (err) {
+                        // Convert path to null-terminated string for openat
+                        var path_buf: [std.posix.PATH_MAX]u8 = undefined;
+                        if (path.len >= path_buf.len) return error.SystemResources;
+                        @memcpy(path_buf[0..path.len], path);
+                        path_buf[path.len] = 0;
+                        const fd = std.posix.openat(std.posix.AT.FDCWD, path_buf[0..path.len :0], .{}, 0) catch |err| switch (err) {
                             error.FileNotFound => return error.FileNotFound,
                             else => return error.SystemResources,
                         };
-                        self.state = .{ .file = .{ .file = file } };
+                        self.state = .{ .file = .{ .fd = fd } };
                         return self.read(buffer);
                     },
                     .reader => |reader| {
@@ -218,8 +223,8 @@ pub const BodyReader = struct {
                 }
                 return to_copy;
             },
-            .file => |*file_state| {
-                const bytes_read = file_state.file.read(buffer) catch |err| switch (err) {
+            .file => |file_state| {
+                const bytes_read = std.posix.read(file_state.fd, buffer) catch |err| switch (err) {
                     else => return error.SystemResources,
                 };
                 if (bytes_read == 0) {

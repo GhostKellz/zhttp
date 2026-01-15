@@ -1,22 +1,23 @@
 const std = @import("std");
 const zhttp = @import("zhttp");
 
-pub fn main() !void {
+pub fn main(process: std.process.Init.Minimal) !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    // Get command line arguments
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
+    // Get command line arguments using iterator
+    var args_iter = std.process.Args.Iterator.init(process.args);
 
-    if (args.len < 3) {
-        std.debug.print("Usage: {s} <url> <output_file>\n", .{args[0]});
+    const prog_name = args_iter.next() orelse "download";
+    const url = args_iter.next() orelse {
+        std.debug.print("Usage: {s} <url> <output_file>\n", .{prog_name});
         return;
-    }
-
-    const url = args[1];
-    const output_file = args[2];
+    };
+    const output_file = args_iter.next() orelse {
+        std.debug.print("Usage: {s} <url> <output_file>\n", .{prog_name});
+        return;
+    };
 
     std.log.info("Downloading {s} to {s}...", .{ url, output_file });
 
@@ -37,14 +38,4 @@ pub fn main() !void {
     };
 
     std.log.info("Download completed successfully!", .{});
-
-    // Show file size
-    const file = std.fs.cwd().openFile(output_file, .{}) catch |err| {
-        std.log.warn("Could not check file size: {}", .{err});
-        return;
-    };
-    defer file.close();
-
-    const file_size = file.getEndPos() catch 0;
-    std.log.info("Downloaded {d} bytes", .{file_size});
 }

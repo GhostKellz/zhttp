@@ -122,7 +122,7 @@ pub const Client = struct {
                 // Exponential backoff
                 if (retry_count > 0) {
                     const delay_ms = std.math.pow(u64, 2, retry_count) * 1000; // 2^retry * 1s
-                    std.posix.nanosleep(0, delay_ms * std.time.ns_per_ms);
+                    compat.nanosleep(0, @as(i64, @intCast(delay_ms * std.time.ns_per_ms)));
                 }
                 return self.sendWithRetries(request, retry_count + 1);
             },
@@ -708,20 +708,21 @@ const Connection = struct {
         self.tls_write_buffer = try self.allocator.alloc(u8, min_buf_len);
         errdefer self.allocator.free(self.tls_write_buffer);
         
+        // Create Io instance for blocking I/O operations
+        var io = Io.Threaded.init(self.allocator, .{ .environ = .empty });
+        defer io.deinit();
+
         // Load CA bundle if certificate verification is enabled
         if (tls_options.verify_certificates) {
             var ca_bundle = crypto.Certificate.Bundle{};
-            // For blocking I/O, use Io.Threaded
-            var io = Io.Threaded.init(self.allocator);
-            defer io.deinit();
             try ca_bundle.rescan(self.allocator, io.io(), compat.now());
             self.ca_bundle = ca_bundle;
         }
         errdefer if (self.ca_bundle) |*bundle| bundle.deinit(self.allocator);
-        
-        // Generate entropy for TLS
-        var entropy: [176]u8 = undefined;
-        crypto.random.bytes(&entropy);
+
+        // Generate entropy for TLS (240 bytes required in Zig 0.16)
+        var entropy: [240]u8 = undefined;
+        io.io().random(&entropy);
 
         // Initialize TLS client with stable reader/writer references
         const tls_client_options = if (tls_options.verify_certificates)
@@ -788,7 +789,7 @@ const Connection = struct {
                 try self.buffered_writer.?.writer().flush();
 
                 // Add delay like in working example to allow server to process request
-                std.posix.nanosleep(0, 100 * std.time.ns_per_ms);
+                compat.nanosleep(0, 100 * std.time.ns_per_ms);
             }
         }
     }
@@ -1065,14 +1066,14 @@ pub fn head(allocator: std.mem.Allocator, url: []const u8) !Response {
 pub fn download(allocator: std.mem.Allocator, url: []const u8, file_path: []const u8) !void {
     var response = try get(allocator, url);
     defer response.deinit();
-    
+
     if (!response.isSuccess()) {
         return error.RequestFailed;
     }
-    
-    const file = try std.fs.cwd().createFile(file_path, .{});
+
+    const file = try compat.createFile(file_path);
     defer file.close();
-    
+
     var buffer: [8192]u8 = undefined;
     while (true) {
         const bytes_read = try response.body_reader.read(&buffer);

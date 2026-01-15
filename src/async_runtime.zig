@@ -3,7 +3,21 @@ const builtin = @import("builtin");
 const net = std.net;
 const os = std.os;
 const linux = os.linux;
+const posix = std.posix;
 const compat = @import("compat.zig");
+
+/// Create an epoll instance (posix.epoll_create1 was removed in Zig 0.16)
+fn epollCreate1(flags: u32) !i32 {
+    const rc = linux.epoll_create1(flags);
+    return switch (linux.errno(rc)) {
+        .SUCCESS => @intCast(rc),
+        .MFILE => error.ProcessFdQuotaExceeded,
+        .NFILE => error.SystemFdQuotaExceeded,
+        .NOMEM => error.SystemResources,
+        .INVAL => error.InvalidArgument,
+        else => error.Unexpected,
+    };
+}
 
 /// Homebrew async runtime for zhttp
 /// Provides minimal event loop, task scheduling, and timer support
@@ -147,7 +161,7 @@ pub const EventLoop = struct {
 
         // Initialize platform-specific event mechanism
         if (builtin.os.tag == .linux) {
-            loop.epoll_fd = try std.posix.epoll_create1(linux.EPOLL.CLOEXEC);
+            loop.epoll_fd = try epollCreate1(linux.EPOLL.CLOEXEC);
         } else if (builtin.os.tag == .macos or builtin.os.tag == .freebsd) {
             loop.kqueue_fd = try std.posix.kqueue();
         }

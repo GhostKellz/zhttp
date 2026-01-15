@@ -3,6 +3,117 @@ const std = @import("std");
 const Io = std.Io;
 const net = Io.net;
 const posix = std.posix;
+const linux = std.os.linux;
+
+/// Create a socket (posix.socket was removed in Zig 0.16)
+pub const SocketError = error{
+    AccessDenied,
+    AddressFamilyUnsupported,
+    ProtocolFamilyNotAvailable,
+    ProcessFdQuotaExceeded,
+    SystemFdQuotaExceeded,
+    SystemResources,
+    ProtocolNotSupported,
+    SocketTypeNotSupported,
+    Unexpected,
+};
+
+pub fn socket(domain: u32, socket_type: u32, protocol: u32) SocketError!posix.socket_t {
+    const rc = linux.socket(domain, socket_type, protocol);
+    return switch (linux.errno(rc)) {
+        .SUCCESS => @intCast(rc),
+        .ACCES => error.AccessDenied,
+        .AFNOSUPPORT => error.AddressFamilyUnsupported,
+        .INVAL => error.ProtocolFamilyNotAvailable,
+        .MFILE => error.ProcessFdQuotaExceeded,
+        .NFILE => error.SystemFdQuotaExceeded,
+        .NOBUFS => error.SystemResources,
+        .NOMEM => error.SystemResources,
+        .PROTONOSUPPORT => error.ProtocolNotSupported,
+        else => error.Unexpected,
+    };
+}
+
+/// Write to a file descriptor (posix.write was removed in Zig 0.16)
+pub const WriteError = error{
+    AccessDenied,
+    BrokenPipe,
+    SystemResources,
+    Unexpected,
+    WouldBlock,
+    InvalidArgument,
+};
+
+pub fn write(fd: posix.fd_t, buf: []const u8) WriteError!usize {
+    const rc = linux.write(fd, buf.ptr, buf.len);
+    return switch (linux.errno(rc)) {
+        .SUCCESS => rc,
+        .ACCES => error.AccessDenied,
+        .PIPE => error.BrokenPipe,
+        .NOSPC, .DQUOT, .FBIG => error.SystemResources,
+        .AGAIN => error.WouldBlock,
+        .INVAL => error.InvalidArgument,
+        .IO, .FAULT, .NXIO, .SPIPE => error.Unexpected,
+        else => error.Unexpected,
+    };
+}
+
+/// Sleep for a given number of nanoseconds (posix.nanosleep was removed in Zig 0.16)
+pub fn nanosleep(seconds: i64, nanoseconds: i64) void {
+    const ts = linux.timespec{
+        .sec = seconds,
+        .nsec = nanoseconds,
+    };
+    _ = linux.nanosleep(&ts, null);
+}
+
+/// Create a file for writing (std.fs.cwd().createFile was removed in Zig 0.16)
+pub const CreateFileError = error{
+    AccessDenied,
+    FileNotFound,
+    SystemResources,
+    PathTooLong,
+    Unexpected,
+};
+
+pub const FileHandle = struct {
+    fd: posix.fd_t,
+
+    pub fn close(self: FileHandle) void {
+        posix.close(self.fd);
+    }
+
+    pub fn writeAll(self: FileHandle, data: []const u8) !void {
+        var index: usize = 0;
+        while (index < data.len) {
+            const written = try write(self.fd, data[index..]);
+            if (written == 0) return error.Unexpected;
+            index += written;
+        }
+    }
+};
+
+pub fn createFile(path: []const u8) CreateFileError!FileHandle {
+    var path_buf: [posix.PATH_MAX]u8 = undefined;
+    if (path.len >= path_buf.len) return error.PathTooLong;
+    @memcpy(path_buf[0..path.len], path);
+    path_buf[path.len] = 0;
+
+    const flags: linux.O = .{
+        .ACCMODE = .WRONLY,
+        .CREAT = true,
+        .TRUNC = true,
+    };
+    const rc = linux.openat(linux.AT.FDCWD, path_buf[0..path.len :0], flags, 0o644);
+    return switch (linux.errno(rc)) {
+        .SUCCESS => .{ .fd = @intCast(rc) },
+        .ACCES, .PERM => error.AccessDenied,
+        .NOENT => error.FileNotFound,
+        .NOMEM, .NFILE, .MFILE => error.SystemResources,
+        .NAMETOOLONG => error.PathTooLong,
+        else => error.Unexpected,
+    };
+}
 
 /// Get current time in milliseconds since epoch (replacement for std.time.milliTimestamp)
 pub fn milliTimestamp() i64 {
@@ -31,7 +142,7 @@ pub fn closeStream(stream: net.Stream) void {
 pub fn writeAll(stream: net.Stream, bytes: []const u8) !void {
     var index: usize = 0;
     while (index < bytes.len) {
-        const written = try posix.write(stream.socket.handle, bytes[index..]);
+        const written = try write(stream.socket.handle, bytes[index..]);
         if (written == 0) return error.ConnectionClosed;
         index += written;
     }
@@ -130,7 +241,7 @@ pub const BufferedWriter = struct {
         if (w.end > 0) {
             var written: usize = 0;
             while (written < w.end) {
-                const n = posix.write(self.stream.socket.handle, w.buffer[written..w.end]) catch {
+                const n = write(self.stream.socket.handle, w.buffer[written..w.end]) catch {
                     return error.WriteFailed;
                 };
                 if (n == 0) return error.WriteFailed;
@@ -144,7 +255,7 @@ pub const BufferedWriter = struct {
         for (data) |slice| {
             var written: usize = 0;
             while (written < slice.len) {
-                const n = posix.write(self.stream.socket.handle, slice[written..]) catch {
+                const n = write(self.stream.socket.handle, slice[written..]) catch {
                     return error.WriteFailed;
                 };
                 if (n == 0) return error.WriteFailed;
@@ -160,7 +271,7 @@ pub const BufferedWriter = struct {
             while (i < splat) : (i += 1) {
                 var written: usize = 0;
                 while (written < last_slice.len) {
-                    const n = posix.write(self.stream.socket.handle, last_slice[written..]) catch {
+                    const n = write(self.stream.socket.handle, last_slice[written..]) catch {
                         return error.WriteFailed;
                     };
                     if (n == 0) return error.WriteFailed;
@@ -179,7 +290,7 @@ pub const BufferedWriter = struct {
 
         var written: usize = 0;
         while (written < w.end) {
-            const n = posix.write(self.stream.socket.handle, w.buffer[written..w.end]) catch {
+            const n = write(self.stream.socket.handle, w.buffer[written..w.end]) catch {
                 return error.WriteFailed;
             };
             if (n == 0) return error.WriteFailed;
@@ -223,7 +334,7 @@ pub fn tcpConnectToHost(allocator: std.mem.Allocator, host: []const u8, port: u1
     var addr = res;
     while (addr) |ai| : (addr = ai.next) {
         // Create socket
-        const sock = posix.socket(
+        const sock = socket(
             @intCast(ai.family),
             @intCast(ai.socktype),
             @intCast(ai.protocol),

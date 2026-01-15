@@ -24,24 +24,28 @@ const TlsConnection = struct {
 };
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){}; 
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
-    
+
+    // Create Io instance for random number generation
+    var io = Io.Threaded.init(allocator, .{ .environ = .empty });
+    defer io.deinit();
+
     std.log.info("Connecting to httpbin.org:443...", .{});
-    
+
     // Connect to HTTPS server
     const stream = try compat.tcpConnectToHost(allocator, "httpbin.org", 443);
     defer compat.closeStream(stream);
-    
+
     std.log.info("TCP connection established", .{});
-    
+
     // Set up TLS exactly like HTTP client
     const tls_conn = try allocator.create(TlsConnection);
     defer allocator.destroy(tls_conn);
-    
+
     const min_buf_len = crypto.tls.max_ciphertext_record_len;
-    
+
     const tls_read_buffer = try allocator.alloc(u8, min_buf_len);
     defer allocator.free(tls_read_buffer);
     const tls_write_buffer = try allocator.alloc(u8, min_buf_len);
@@ -50,13 +54,13 @@ pub fn main() !void {
     defer allocator.free(stream_read_buffer);
     const stream_write_buffer = try allocator.alloc(u8, min_buf_len);
     defer allocator.free(stream_write_buffer);
-    
+
     var stream_reader = compat.BufferedReader.init(stream, stream_read_buffer);
     var stream_writer = compat.BufferedWriter.init(stream, stream_write_buffer);
 
-    // Generate entropy for TLS
-    var entropy: [176]u8 = undefined;
-    crypto.random.bytes(&entropy);
+    // Generate entropy for TLS (240 bytes required in Zig 0.16)
+    var entropy: [240]u8 = undefined;
+    io.io().random(&entropy);
 
     const tls_options = crypto.tls.Client.Options{
         .host = .no_verification,
@@ -112,7 +116,7 @@ pub fn main() !void {
     std.log.info("Request sent and flushed, reading response...", .{});
     
     // Add delay like in working minimal test
-    std.posix.nanosleep(0, 100 * std.time.ns_per_ms);
+    compat.nanosleep(0, 100 * std.time.ns_per_ms);
     
     // Now try to read using TLS client readSliceShort like HTTP client does
     std.log.info("Reading from TLS client...", .{});
