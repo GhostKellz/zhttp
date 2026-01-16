@@ -34,7 +34,7 @@
     .dependencies = .{
         .zquic = .{
             .url = "https://github.com/ghostkellz/zquic/archive/main.tar.gz",
-            .hash = "zquic-0.9.4-2rPds2C4EQCRe4_GKBDvBPYObArshidqecF1mbEFCxhP",
+            .hash = "zquic-0.9.5-2rPds_FaEgDRwIUgqCAhldSNDvsG47LIxFzoPqmif_jr",
         },
     },
     .paths = .{
