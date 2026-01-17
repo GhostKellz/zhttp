@@ -22,7 +22,6 @@ fn epollCreate1(flags: u32) !i32 {
 /// Homebrew async runtime for zhttp
 /// Provides minimal event loop, task scheduling, and timer support
 /// Eliminates external dependencies like zsync
-
 /// Task state for async operations
 pub const TaskState = enum {
     pending,
@@ -72,9 +71,9 @@ pub fn Future(comptime T: type) type {
 pub const Task = struct {
     id: u64,
     state: TaskState,
-    callback: *const fn(*Task) anyerror!void,
+    callback: *const fn (*Task) anyerror!void,
 
-    pub fn init(id: u64, callback: *const fn(*Task) anyerror!void) Task {
+    pub fn init(id: u64, callback: *const fn (*Task) anyerror!void) Task {
         return .{
             .id = id,
             .state = .pending,
@@ -111,10 +110,10 @@ pub const Event = struct {
 pub const Timer = struct {
     id: u64,
     deadline_ms: u64,
-    callback: *const fn(*Timer) void,
+    callback: *const fn (*Timer) void,
     cancelled: bool = false,
 
-    pub fn init(id: u64, timeout_ms: u64, callback: *const fn(*Timer) void) Timer {
+    pub fn init(id: u64, timeout_ms: u64, callback: *const fn (*Timer) void) Timer {
         const now: u64 = @intCast(compat.milliTimestamp());
         return .{
             .id = id,
@@ -163,7 +162,7 @@ pub const EventLoop = struct {
         if (builtin.os.tag == .linux) {
             loop.epoll_fd = try epollCreate1(linux.EPOLL.CLOEXEC);
         } else if (builtin.os.tag == .macos or builtin.os.tag == .freebsd) {
-            loop.kqueue_fd = try std.posix.kqueue();
+            loop.kqueue_fd = std.posix.system.kqueue();
         }
 
         return loop;
@@ -221,7 +220,7 @@ pub const EventLoop = struct {
     }
 
     /// Schedule a task for execution
-    pub fn scheduleTask(self: *Self, callback: *const fn(*Task) anyerror!void) !u64 {
+    pub fn scheduleTask(self: *Self, callback: *const fn (*Task) anyerror!void) !u64 {
         const task_id = self.next_task_id;
         self.next_task_id += 1;
 
@@ -232,7 +231,7 @@ pub const EventLoop = struct {
     }
 
     /// Schedule a timer
-    pub fn scheduleTimer(self: *Self, timeout_ms: u64, callback: *const fn(*Timer) void) !u64 {
+    pub fn scheduleTimer(self: *Self, timeout_ms: u64, callback: *const fn (*Timer) void) !u64 {
         const timer_id = self.next_timer_id;
         self.next_timer_id += 1;
 
@@ -263,7 +262,7 @@ pub const EventLoop = struct {
             var task = &self.tasks.items[i];
             if (task.state == .pending) {
                 task.run() catch |err| {
-                    std.debug.print("Task {d} failed: {}\n", .{task.id, err});
+                    std.debug.print("Task {d} failed: {}\n", .{ task.id, err });
                 };
             }
             if (task.state == .completed or task.state == .failed) {
